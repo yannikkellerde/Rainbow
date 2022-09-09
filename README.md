@@ -1,5 +1,11 @@
 # Rainbow 🌈
 
+## Purpose of Fork
+The purpose of this fork is to make Rainbow DQN work for two player games and graph neural networks. It is specifically tuned for my usecase (playing hex) and not easily transferable to other usecases.
+
+## Original README...
+
+
 *An variant of Rainbow DQN which reaches a median HNS of 205.7 after only 10M frames (the original Rainbow from Hessel et al. 2017 reached 231.0 using 20x more data).* See the [paper](https://arxiv.org/abs/2111.10247) for more details. This was developed as part of an undergraduate university course on scientific research and writing. A selection of videos is available [here](https://drive.google.com/drive/folders/1bNRyHcDYxSbww1aGskhqoMA2OurJXtOU).
 
 ### Key Changes and Results

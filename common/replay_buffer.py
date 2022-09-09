@@ -1,13 +1,15 @@
 import collections
+from torch_geometric.data import Data,Batch
+from typing import List, Tuple
 import random
 from math import sqrt
 
 import numpy as np
 import torch
-from gym.wrappers import LazyFrames
 
-from common.utils import prep_observation_for_qnet
-
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+if not torch.cuda.is_available():
+    print("WARNING: cuda not avaliabe, using cpu")
 
 class UniformReplayBuffer:
     def __init__(self, burnin, capacity, gamma, n_step, parallel_envs, use_amp):
@@ -20,6 +22,24 @@ class UniformReplayBuffer:
         self.gamma = gamma
         self.n_step = n_step
         self.n_step_buffers = [collections.deque(maxlen=self.n_step + 1) for j in range(parallel_envs)]
+
+    @staticmethod
+    def prepare_transition(state, next_state, action: int, reward: float, done: bool):
+        action = torch.LongTensor([action]).to(device)
+        reward = torch.FloatTensor([reward]).to(device)
+        done = torch.FloatTensor([done]).to(device)
+        state = state.to(device)
+        next_state = next_state.to(device)
+
+        return state, next_state, action, reward, done
+
+    def put_simple(self,state,action,reward,next_state,done):
+        state,next_state,action,reward,done = self.prepare_transition(state, next_state, action, reward, done)
+        if len(self.buffer) < self.capacity:
+            self.buffer.append((state, next_state, action, reward, done))
+        else:
+            self.buffer[self.nextwrite % self.capacity] = (state, next_state, action, reward, done)
+            self.nextwrite += 1
 
     def put(self, *transition, j):
         self.n_step_buffers[j].append(transition)
@@ -35,9 +55,10 @@ class UniformReplayBuffer:
                     done = True
                     break
 
-            action = torch.LongTensor([action]).cuda()
-            reward = torch.FloatTensor([reward]).cuda()
-            done = torch.FloatTensor([done]).cuda()
+            action = torch.LongTensor([action]).to(device)
+            reward = torch.FloatTensor([reward]).to(device)
+            done = torch.FloatTensor([done]).to(device)
+            state = state.to(device)
 
             if len(self.buffer) < self.capacity:
                 self.buffer.append((state, next_state, action, reward, done))
@@ -49,12 +70,11 @@ class UniformReplayBuffer:
         """ Sample a minibatch from the ER buffer (also converts the FrameStacked LazyFrames to contiguous tensors) """
         batch = random.sample(self.buffer, batch_size)
         state, next_state, action, reward, done = zip(*batch)
-        state = list(map(lambda x: torch.from_numpy(x.__array__()), state))
-        next_state = list(map(lambda x: torch.from_numpy(x.__array__()), next_state))
+        state = Batch.from_data_list(state).to(device)
+        next_state = Batch.from_data_list(next_state).to(device)
 
-        state, next_state, action, reward, done = map(torch.stack, [state, next_state, action, reward, done])
-        return prep_observation_for_qnet(state, self.use_amp), prep_observation_for_qnet(next_state, self.use_amp), \
-               action.squeeze(), reward.squeeze(), done.squeeze()
+        action, reward, done = map(torch.stack, [action, reward, done])
+        return state, next_state, action.squeeze(), reward.squeeze(), done.squeeze()
 
     @property
     def burnedin(self):
@@ -89,11 +109,22 @@ class PrioritizedReplayBuffer:
 
     @staticmethod
     def prepare_transition(state, next_state, action: int, reward: float, done: bool):
-        action = torch.LongTensor([action]).cuda()
-        reward = torch.FloatTensor([reward]).cuda()
-        done = torch.FloatTensor([done]).cuda()
+        action = torch.LongTensor([action]).to(device)
+        reward = torch.FloatTensor([reward]).to(device)
+        done = torch.FloatTensor([done]).to(device)
+        state = state.to(device)
+        next_state = next_state.to(device)
 
         return state, next_state, action, reward, done
+
+    def put_simple(self,state,action,reward,next_state,done):
+        idx = self.next_idx
+        self.data[idx] = self.prepare_transition(state, next_state, action, reward, done)
+        self.next_idx = (idx + 1) % self.capacity
+        self.size = min(self.capacity, self.size + 1)
+
+        self._set_priority_min(idx, sqrt(self.max_priority))
+        self._set_priority_sum(idx, sqrt(self.max_priority))
 
     def put(self, *transition, j):
         self.n_step_buffers[j].append(transition)
@@ -108,9 +139,6 @@ class PrioritizedReplayBuffer:
                 if self.n_step_buffers[j][k][3]:
                     done = True
                     break
-
-            assert isinstance(state, LazyFrames)
-            assert isinstance(next_state, LazyFrames)
 
             idx = self.next_idx
             self.data[idx] = self.prepare_transition(state, next_state, action, reward, done)
@@ -178,12 +206,11 @@ class PrioritizedReplayBuffer:
 
     def prepare_samples(self, batch):
         state, next_state, action, reward, done = zip(*batch)
-        state = list(map(lambda x: torch.from_numpy(x.__array__()), state))
-        next_state = list(map(lambda x: torch.from_numpy(x.__array__()), next_state))
+        state = Batch.from_data_list(state)
+        next_state = Batch.from_data_list(next_state)
 
-        state, next_state, action, reward, done = map(torch.stack, [state, next_state, action, reward, done])
-        return prep_observation_for_qnet(state, self.use_amp), prep_observation_for_qnet(next_state, self.use_amp), \
-               action.squeeze(), reward.squeeze(), done.squeeze()
+        action, reward, done = map(torch.stack, [action, reward, done])
+        return state, next_state, action.squeeze(), reward.squeeze(), done.squeeze()
 
     def update_priorities(self, indexes, priorities):
         for idx, priority in zip(indexes, priorities):

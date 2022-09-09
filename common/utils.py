@@ -3,7 +3,6 @@ from copy import deepcopy
 import torch
 from tqdm.auto import trange
 
-from common.env_wrappers import create_env
 
 
 def prep_observation_for_qnet(tensor, use_amp):
@@ -36,23 +35,6 @@ class LinearSchedule:
         else:
             return min(slope * frame + self.initial_value, self.final_value)
 
-def get_mean_ep_length(args):
-    """Run a few iterations of the environment and estimate the mean episode length"""
-    dc_args = deepcopy(args)
-    dc_args.parallel_envs = 12
-    dc_args.subproc_vecenv = True
-    dc_env = create_env(dc_args)
-    dc_env.reset()
-
-    # Decorrelate envs
-    ep_lengths = []
-    for frame in trange(args.time_limit//4+100):
-        _, _, _, infos = dc_env.step([dc_env.action_space.sample() for x in range(dc_args.parallel_envs)])
-        for info, j in zip(infos, range(dc_args.parallel_envs)):
-            if 'episode_metrics' in info.keys(): ep_lengths.append(info['episode_metrics']['length'])
-    dc_env.close()
-    mean_length = sum(ep_lengths)/len(ep_lengths)
-    return mean_length
 
 def env_seeding(user_seed, env_name):
     return user_seed + zlib.adler32(bytes(env_name, encoding='utf-8')) % 10000

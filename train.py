@@ -3,6 +3,7 @@ This file includes the model and environment setup and the main training loop.
 Look at the README.md file for details on how to use this.
 """
 
+from copy import deepcopy
 import time, random
 from collections import deque
 from pathlib import Path
@@ -10,15 +11,17 @@ from types import SimpleNamespace as sn
 
 import torch, wandb
 import numpy as np
-from tqdm import trange
+
 from rich import print
 
 from common import argp
 from common.rainbow import Rainbow
-from common.env_wrappers import create_env, BASE_FPS_ATARI, BASE_FPS_PROCGEN
-from common.utils import LinearSchedule, get_mean_ep_length
+from common.utils import LinearSchedule
+from graph_game.multi_env_manager import Env_manager, Debugging_manager
+from alive_progress import alive_bar,alive_it
+from GN0.visualize_transitions import visualize_transitions
 
-torch.backends.cudnn.benchmark = True  # let cudnn heuristics choose fastest conv algorithm
+# torch.backends.cudnn.benchmark = True  # let cudnn heuristics choose fastest conv algorithm
 
 if __name__ == '__main__':
     args, wandb_log_config = argp.read_args()
@@ -27,11 +30,16 @@ if __name__ == '__main__':
     torch.manual_seed(args.seed)
 
     # set up logging & model checkpoints
-    wandb.init(project='rainbow', save_code=True, config=dict(**wandb_log_config, log_version=100),
+    wandb.init(project='rainbow_hex', save_code=True, config=dict(**wandb_log_config, log_version=100),
                mode=('online' if args.use_wandb else 'offline'), anonymous='allow', tags=[args.wandb_tag] if args.wandb_tag else [])
-    save_dir = Path("checkpoints") / wandb.run.name
-    save_dir.mkdir(parents=True)
-    args.save_dir = str(save_dir)
+    if args.use_wandb:
+        save_dir = Path("checkpoints") / wandb.run.name
+        save_dir.mkdir(parents=True)
+        args.save_dir = str(save_dir)
+    else:
+        save_dir = Path("checkpoints") / "offline"
+        save_dir.mkdir(parents=True, exist_ok=True)
+        args.save_dir = str(save_dir)
 
     # create decay schedules for dqn's exploration epsilon and per's importance sampling (beta) parameter
     eps_schedule = LinearSchedule(0, initial_value=args.init_eps, final_value=args.final_eps, decay_time=args.eps_decay_frames)
@@ -40,114 +48,209 @@ if __name__ == '__main__':
     # When using many (e.g. 64) environments in parallel, having all of them be correlated can be an issue.
     # To avoid this, we estimate the mean episode length for this environment and then take i*(mean ep length/parallel envs count)
     # random steps in the i'th environment.
-    print(f'Creating', args.parallel_envs, 'and decorrelating environment instances. This may take up to a few minutes.. ', end='')
-    decorr_steps = None
-    if args.decorr and not args.env_name.startswith('procgen:'):
-        decorr_steps = get_mean_ep_length(args) // args.parallel_envs
-    env = create_env(args, decorr_steps=decorr_steps)
-    states = env.reset()
+    print(f'Creating', args.parallel_envs, 'and decorrelating environment instances.', end='')
+    decorr_steps = 20
+    # env_manager = Env_manager(args.parallel_envs,args.hex_size,gamma=args.gamma)
+    env_manager = Env_manager(args.parallel_envs,args.hex_size,gamma=args.gamma)
+    for _ in range(decorr_steps):
+        env_manager.step(env_manager.sample())
+    states = env_manager.observe()
     print('Done.')
 
-    rainbow = Rainbow(env, args)
-    wandb.watch(rainbow.q_policy)
+    rainbow = Rainbow(env_manager, args)
+    if args.load_model is not None:
+        print("Loading model",args.load_model)
+        stuff = torch.load(args.load_model)
+        rainbow.q_policy.load_state_dict(stuff["state_dict"])
+        # rainbow.q_policy.import_norm_cache(*stuff["cache"])
+        rainbow.opt.load_state_dict(stuff["optimizer_state_dict"])
+        starting_frame = stuff["game_frame"]
+    else:
+        starting_frame = 0
+    # wandb.watch(rainbow.maker_q_policy)
+    # wandb.watch(rainbow.breaker_q_policy)
 
     print('[blue bold]Running environment =', args.env_name,
-          '[blue bold]\nwith action space   =', env.action_space,
-          '[blue bold]\nobservation space   =', env.observation_space,
           '[blue bold]\nand config:', sn(**wandb_log_config))
 
     episode_count = 0
-    returns = deque(maxlen=100)
-    discounted_returns = deque(maxlen=10)
-    losses = deque(maxlen=10)
-    q_values = deque(maxlen=10)
-    grad_norms = deque(maxlen=10)
-    iter_times = deque(maxlen=10)
-    reward_density = 0
+    stat_dict = {
+            "targets":deque(maxlen=10),
+            "losses":deque(maxlen=10),
+            "q_values":deque(maxlen=10),
+            "grad_norms":deque(maxlen=10),
+            "training_rewards":deque(maxlen=10),
+            "actions":deque(maxlen=10)
+            }
+    stats = {
+            "maker":deepcopy(stat_dict),
+            "breaker":deepcopy(stat_dict),
+            "returns":deque(maxlen=100),
+            "lengths":deque(maxlen=100)
+            }
 
     returns_all = []
     q_values_all = []
+    starting_states = states
+    state_history,reward_history,done_history,action_history = [],[],[],[]
+    last_maker_checkpoint = None
+    last_breaker_checkpoint = None
+    hex_size = args.hex_size
+    batch_size = args.batch_size + 128*(11-hex_size)
+    next_jump = time.perf_counter()+4800
 
     # main training loop:
     # we will do a total of args.training_frames/args.parallel_envs iterations
     # in each iteration we perform one interaction step in each of the args.parallel_envs environments,
     # and args.train_count training steps on batches of size args.batch_size
-    t = trange(0, args.training_frames + 1, args.parallel_envs)
-    for game_frame in t:
-        iter_start = time.time()
-        eps = eps_schedule(game_frame)
-        per_beta = per_beta_schedule(game_frame)
+    with alive_bar(total=(args.training_frames+1)//args.parallel_envs, disable=False) as bar:
+        for game_frame in range(starting_frame, args.training_frames+1, args.parallel_envs):
+            additional_logs = {}
+            iter_start = time.time()
+            eps = eps_schedule(game_frame)
+            per_beta = per_beta_schedule(game_frame)
 
-        # reset the noisy-nets noise in the policy
-        if args.noisy_dqn:
-            rainbow.reset_noise(rainbow.q_policy)
+            # reset the noisy-nets noise in the policy
+            if args.noisy_dqn:
+                rainbow.reset_noise(rainbow.maker_q_policy)
+                rainbow.reset_noise(rainbow.breaker_q_policy)
 
-        # compute actions to take in all parallel envs, asynchronously start environment step
-        actions = rainbow.act(states, eps)
-        env.step_async(actions)
+            # compute actions to take in all parallel envs, asynchronously start environment step
+            actions = rainbow.act(states, eps)
+            if env_manager.global_onturn == "m":
+                stats["maker"]["actions"].append(torch.mean(actions.float()).item())
+            else:
+                stats["breaker"]["actions"].append(torch.mean(actions.float()).item())
 
-        # if training has started, perform args.train_count training steps, each on a batch of size args.batch_size
-        if rainbow.buffer.burnedin:
-            for train_iter in range(args.train_count):
-                if args.noisy_dqn and train_iter > 0: rainbow.reset_noise(rainbow.q_policy)
-                q, loss, grad_norm = rainbow.train(args.batch_size, beta=per_beta)
-                losses.append(loss)
-                grad_norms.append(grad_norm)
-                q_values.append(q)
-                q_values_all.append((game_frame, q))
+            # if training has started, perform args.train_count training steps, each on a batch of size args.batch_size
+            # print(rainbow.maker_buffer.burnedin,rainbow.breaker_buffer.burnedin)
+            if rainbow.maker_buffer.burnedin and rainbow.breaker_buffer.burnedin:
+                # print("Training",args.train_count)
+                for train_iter in range(args.train_count):
+                    if args.noisy_dqn and train_iter > 0: rainbow.reset_noise(rainbow.maker_q_policy)
+                    if args.noisy_dqn and train_iter > 0: rainbow.reset_noise(rainbow.breaker_q_policy)
+                    for player in ("maker","breaker"):
+                        q, targets, loss, grad_norm, reward = rainbow.train(batch_size, maker=player=="maker", beta=per_beta, add_cache=train_iter==args.train_count-1)
+                        stats[player]["targets"].append(targets)
+                        stats[player]["losses"].append(loss)
+                        stats[player]["q_values"].append(q)
+                        stats[player]["grad_norms"].append(grad_norm)
+                        stats[player]["training_rewards"].append(reward)
+                        q_values_all.append((game_frame, q))
 
-        # copy the Q-policy weights over to the Q-target net
-        # (see also https://github.com/spragunr/deep_q_rl/blob/master/deep_q_rl/launcher.py#L155)
-        if game_frame % args.sync_dqn_target_every == 0 and rainbow.buffer.burnedin:
-            rainbow.sync_Q_target()
+            # copy the Q-policy weights over to the Q-target net
+            # (see also https://github.com/spragunr/deep_q_rl/blob/master/deep_q_rl/launcher.py#L155)
+            if game_frame % args.sync_dqn_target_every == 0 and rainbow.maker_buffer.burnedin and rainbow.breaker_buffer.burnedin:
+                rainbow.sync_Q_target()
 
-        # block until environments are ready, then collect transitions and add them to the replay buffer
-        next_states, rewards, dones, infos = env.step_wait()
-        for state, action, reward, done, j in zip(states, actions, rewards, dones, range(args.parallel_envs)):
-            reward_density = 0.999 * reward_density + (1 - 0.999) * (reward != 0)
-            rainbow.buffer.put(state, action, reward, done, j=j)
-        states = next_states
+            # print("collect transitions")
+            # block until environments are ready, then collect transitions and add them to the replay buffer
+            # valid_actions = Env_manager.validate_actions(states,actions)
+            valid_actions = Env_manager.validate_actions(states,actions)
+            
+            next_states, rewards, dones, infos = env_manager.step(valid_actions)
+            state_history.append(next_states)
+            reward_history.append(rewards)
+            done_history.append(dones)
+            action_history.append(actions)
+            # print("stepped")
+            if len(state_history) >= args.num_required_repeated_actions:
+                transitions_maker,transitions_breaker = env_manager.get_transitions(starting_states,state_history,action_history,reward_history,done_history)
+                for state, action, reward, next_state, done in transitions_maker:
+                    assert torch.all(state.x[:,2]==1) and torch.all(next_state.x[:,2]==1)
+                    rainbow.maker_buffer.put_simple(state, action, reward, next_state, done)
+                for state, action, reward, next_state, done in transitions_breaker:
+                    assert torch.all(state.x[:,2]==0) and torch.all(next_state.x[:,2]==0)
+                    rainbow.breaker_buffer.put_simple(state, action, reward, next_state, done)
 
-        # if any of the envs finished an episode, log stats to wandb
-        for info, j in zip(infos, range(args.parallel_envs)):
-            if 'episode_metrics' in info.keys():
-                episode_metrics = info['episode_metrics']
-                returns.append(episode_metrics['return'])
-                returns_all.append((game_frame, episode_metrics['return']))
-                discounted_returns.append(episode_metrics['discounted_return'])
+                starting_states = state_history[-2]
+                state_history = [state_history[-1]]
+                action_history = [action_history[-1]]
+                reward_history = [reward_history[-1]]
+                done_history = [done_history[-1]]
+            states = next_states
+            # print("tryin to record metrics")
 
-                log = {'x/game_frame': game_frame + j, 'x/episode': episode_count,
-                       'ep/return': episode_metrics['return'], 'ep/length': episode_metrics['length'], 'ep/time': episode_metrics['time'],
-                       'ep/mean_reward_per_frame': episode_metrics['return'] / (episode_metrics['length'] + 1), 'grad_norm': np.mean(grad_norms),
-                       'mean_loss': np.mean(losses), 'mean_q_value': np.mean(q_values), 'fps': args.parallel_envs / np.mean(iter_times),
-                       'running_avg_return': np.mean(returns), 'lr': rainbow.opt.param_groups[0]['lr'], 'reward_density': reward_density,
-                       'discounted_return': np.mean(discounted_returns)}
-                if args.prioritized_er: log['per_beta'] = per_beta
+            # if any of the envs finished an episode, log stats to wandb
+            for info, j in zip(infos, range(args.parallel_envs)):
+                if 'episode_metrics' in info.keys():
+                    episode_metrics = info['episode_metrics']
+                    stats["returns"].append(episode_metrics['return'])
+                    stats["lengths"].append(episode_metrics["length"])
+                    returns_all.append((game_frame, episode_metrics['return']))
+
+                    episode_count += 1
+
+
+            if game_frame % (50_000-(50_000 % args.parallel_envs)) == 0:
+                print(f' [{game_frame:>8} frames, {episode_count:>5} episodes] running average return = {np.mean(stats["returns"])}')
+                torch.cuda.empty_cache()
+
+
+            if game_frame % (160_000-(160_000 % args.parallel_envs)) == 0:
+                last_maker_checkpoint, last_breaker_checkpoint = rainbow.save(
+                        game_frame, args=args, run_name=wandb.run.name, run_id=wandb.run.id,
+                        target_metric=np.mean(stats["returns"]), returns_all=returns_all, q_values_all=q_values_all
+                )
+                maker_elo,breaker_elo = rainbow.join_elo_league(game_frame)
+                additional_logs["maker_elo"] = maker_elo
+                additional_logs["breaker_elo"] = breaker_elo
+                columns,data = rainbow.elo_handler.get_rating_table()
+                additional_logs["rating_table"] = wandb.Table(columns = columns, data = data)
+                first_move_maker, first_move_breaker = rainbow.get_first_move_plots()
+                additional_logs["first_move_maker"] = wandb.Image(first_move_maker)
+                additional_logs["first_move_breaker"] = wandb.Image(first_move_breaker)
+                print(f'Model saved at {game_frame} frames.')
+
+            if time.perf_counter()>next_jump:
+                next_jump = time.perf_counter()+4800
+                if hex_size<11:
+                    hex_size+=1
+                    batch_size = args.batch_size + 128*(11-hex_size)
+                    print(f"Increasing hex size to {hex_size}")
+                    rainbow.maximum_nodes = hex_size**2
+                    rainbow.elo_handler.size = hex_size
+                    env_manager.change_hex_size(hex_size)
+                    starting_states = env_manager.observe()
+                    state_history,reward_history,done_history,action_history = [],[],[],[]
+                    eps_schedule = LinearSchedule(game_frame, initial_value=max(args.init_eps/4,args.final_eps), final_value=args.final_eps, decay_time=args.eps_decay_frames/2)
+                else:
+                    eps_schedule = LinearSchedule(game_frame, initial_value=args.final_eps, final_value=0.01, decay_time=args.eps_decay_frames*5)
+                    next_jump = time.perf_counter()+1000000
+
+            if game_frame % (40_000-(40_000 % args.parallel_envs)) == 0 and rainbow.maker_buffer.burnedin:
+                print("going for eval!")
+                if last_maker_checkpoint is None:
+                    additional_logs.update(rainbow.evaluate_models())
+                else:
+                    additional_logs.update(rainbow.evaluate_models(last_maker_checkpoint,last_breaker_checkpoint))
+                print(additional_logs)
+
+            if (game_frame % (2_000-(2_000 % args.parallel_envs)) == 0 and game_frame > 0) or len(additional_logs)>0:
+                log  = {}
+
+                for key,value in stats.items():
+                    if key in ("maker","breaker"):
+                        for name,numbers in value.items():
+                            log[key+"/"+name] = np.mean(numbers)
+                    else:
+                        log[key] = np.mean(value)
+                log["buffer_size"] = len(rainbow.maker_buffer)
+                log["hex_size"] = hex_size
+                log["batch_size"] = batch_size
+                log["game_frame"] = game_frame
                 if eps > 0: log['epsilon'] = eps
+                if len(additional_logs)>0:
+                    for key,value in additional_logs.items():
+                        log["ev/"+key] = value
 
-                # log video recordings if available
-                if 'emulator_recording' in info: log['emulator_recording'] = wandb.Video(info['emulator_recording'], fps=(
-                    BASE_FPS_PROCGEN if args.env_name.startswith('procgen:') else BASE_FPS_ATARI), format="mp4")
-                if 'preproc_recording' in info: log['preproc_recording'] = wandb.Video(info['preproc_recording'],
-                    fps=(BASE_FPS_PROCGEN if args.env_name.startswith('procgen:') else BASE_FPS_ATARI) // args.frame_skip, format="mp4")
-
+                if args.prioritized_er: log['per_beta'] = per_beta
                 wandb.log(log)
-                episode_count += 1
 
-        if game_frame % (50_000-(50_000 % args.parallel_envs)) == 0:
-            print(f' [{game_frame:>8} frames, {episode_count:>5} episodes] running average return = {np.mean(returns)}')
-            torch.cuda.empty_cache()
-
-        # every 1M frames, save a model checkpoint to disk and wandb
-        if game_frame % (500_000-(500_000 % args.parallel_envs)) == 0 and game_frame > 0:
-            rainbow.save(game_frame, args=args, run_name=wandb.run.name, run_id=wandb.run.id, target_metric=np.mean(returns), returns_all=returns_all, q_values_all=q_values_all)
-            print(f'Model saved at {game_frame} frames.')
-
-        iter_times.append(time.time() - iter_start)
-        t.set_description(f' [{game_frame:>8} frames, {episode_count:>5} episodes]', refresh=False)
+            bar.text = f' [{game_frame:>8} frames, {episode_count:>5} episodes]'
+            bar()
 
     wandb.log({'x/game_frame': game_frame + args.parallel_envs, 'x/episode': episode_count,
                'x/train_step': (game_frame + args.parallel_envs) // args.parallel_envs * args.train_count,
                'x/emulator_frame': (game_frame + args.parallel_envs) * args.frame_skip})
-    env.close()
     wandb.finish()
