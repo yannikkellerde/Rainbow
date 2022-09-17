@@ -34,21 +34,22 @@ class Rainbow:
     maker_buffer: Union[UniformReplayBuffer, PrioritizedReplayBuffer]
     breaker_buffer: Union[UniformReplayBuffer, PrioritizedReplayBuffer]
 
-    def __init__(self, env:Env_manager, args: SimpleNamespace) -> None:
+    def __init__(self, env:Env_manager, model_creation_func, args: SimpleNamespace) -> None:
         self.env:Env_manager = env
         self.save_dir = args.save_dir
         self.use_amp = args.use_amp
         self.maximum_nodes = args.hex_size**2
 
-        self.maker_q_policy = get_pre_defined("sage+norm").to(device)
-        self.maker_q_target = get_pre_defined("sage+norm").to(device)
+        self.model_creation_func = model_creation_func
+        self.maker_q_policy = model_creation_func().to(device)
+        self.maker_q_target = model_creation_func().to(device)
         self.maker_q_target.load_state_dict(self.maker_q_policy.state_dict())
 
-        self.breaker_q_policy = get_pre_defined("sage+norm").to(device)
-        self.breaker_q_target = get_pre_defined("sage+norm").to(device)
+        self.breaker_q_policy = model_creation_func().to(device)
+        self.breaker_q_target = model_creation_func().to(device)
         self.breaker_q_target.load_state_dict(self.breaker_q_policy.state_dict())
 
-        self.elo_handler = Elo_handler(args.hex_size,empty_model_func=lambda :get_pre_defined("sage+norm").to(device),device=device)
+        self.elo_handler = Elo_handler(args.hex_size,empty_model_func=lambda :model_creation_func().to(device),device=device)
         self.elo_handler.add_player("maker",self.maker_q_policy,fix_rating=1500)
         self.elo_handler.add_player("breaker",self.breaker_q_policy,fix_rating=1500)
         self.elo_handler.add_player("random",random_player,fix_rating=1500,simple=True)
@@ -82,11 +83,14 @@ class Rainbow:
 
     def get_first_move_plots(self):
         plt.clf()
+        self.maker_q_policy.eval()
+        self.breaker_q_policy.eval()
         new_game = Hex_game(int(math.sqrt(self.maximum_nodes)))
         to_pred_maker = convert_node_switching_game(new_game.view,global_input_properties=[1],need_backmap=True).to(device)
         to_pred_breaker = convert_node_switching_game(new_game.view,global_input_properties=[0],need_backmap=True).to(device)
         pred_maker = self.maker_q_policy(to_pred_maker.x,to_pred_maker.edge_index).squeeze()
         pred_breaker = self.breaker_q_policy(to_pred_breaker.x,to_pred_breaker.edge_index).squeeze()
+        print(pred_maker,pred_breaker)
         maker_vinds = {to_pred_maker.backmap[int(i)]:value for i,value in enumerate(pred_maker) if int(i)>1}
         breaker_vinds = {to_pred_breaker.backmap[int(i)]:value for i,value in enumerate(pred_breaker) if int(i)>1}
         maker_vprop = new_game.view.new_vertex_property("float")
@@ -100,11 +104,13 @@ class Rainbow:
         fig_maker = new_game.board.matplotlib_me(vprop=maker_vprop,color_based_on_vprop=True)
         fig_breaker = new_game.board.matplotlib_me(vprop=breaker_vprop,color_based_on_vprop=True)
 
+        self.maker_q_policy.train()
+        self.breaker_q_policy.train()
         return fig_maker,fig_breaker
         
 
-    def join_elo_league(self,game_frame):
-        return self.elo_handler.add_elo_league_contestant(str(game_frame),self.maker_q_policy,self.breaker_q_policy)
+    def join_elo_league(self,game_frame,maker_checkpoint,breaker_checkpoint):
+        return self.elo_handler.add_elo_league_contestant(str(game_frame)+"_"+str(math.sqrt(self.maximum_nodes)),maker_checkpoint,breaker_checkpoint)
  
 
     def evaluate_models(self,last_maker_checkpoint=None,last_breaker_checkpoint=None):
@@ -120,7 +126,7 @@ class Rainbow:
 
         if last_breaker_checkpoint is not None:
             stuff = torch.load(last_breaker_checkpoint)
-            nn = get_pre_defined("sage+norm").to(device)
+            nn = self.model_creation_func().to(device)
             nn.load_state_dict(stuff["state_dict"])
             if "cache" in stuff and stuff["cache"] is not None:
                 nn.import_norm_cache(*stuff["cache"])
@@ -133,7 +139,7 @@ class Rainbow:
 
         if last_maker_checkpoint is not None:
             stuff = torch.load(last_maker_checkpoint)
-            nn = get_pre_defined("sage+norm").to(device)
+            nn = self.model_creation_func().to(device)
             nn.load_state_dict(stuff["state_dict"])
             if "cache" in stuff and stuff["cache"] is not None:
                 nn.import_norm_cache(*stuff["cache"])

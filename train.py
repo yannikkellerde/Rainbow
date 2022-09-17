@@ -20,6 +20,7 @@ from common.utils import LinearSchedule
 from graph_game.multi_env_manager import Env_manager, Debugging_manager
 from alive_progress import alive_bar,alive_it
 from GN0.visualize_transitions import visualize_transitions
+from GN0.models import get_pre_defined
 
 # torch.backends.cudnn.benchmark = True  # let cudnn heuristics choose fastest conv algorithm
 
@@ -57,7 +58,7 @@ if __name__ == '__main__':
     states = env_manager.observe()
     print('Done.')
 
-    rainbow = Rainbow(env_manager, args)
+    rainbow = Rainbow(env_manager, lambda :get_pre_defined(args.model_name), args)
     if args.load_model is not None:
         print("Loading model",args.load_model)
         stuff = torch.load(args.load_model)
@@ -192,7 +193,7 @@ if __name__ == '__main__':
                         game_frame, args=args, run_name=wandb.run.name, run_id=wandb.run.id,
                         target_metric=np.mean(stats["returns"]), returns_all=returns_all, q_values_all=q_values_all
                 )
-                maker_elo,breaker_elo = rainbow.join_elo_league(game_frame)
+                maker_elo,breaker_elo = rainbow.join_elo_league(game_frame,last_maker_checkpoint,last_breaker_checkpoint)
                 additional_logs["maker_elo"] = maker_elo
                 additional_logs["breaker_elo"] = breaker_elo
                 columns,data = rainbow.elo_handler.get_rating_table()
