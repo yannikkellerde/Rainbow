@@ -3,6 +3,8 @@ This file includes the model and environment setup and the main training loop.
 Look at the README.md file for details on how to use this.
 """
 
+from argparse import Namespace
+
 from copy import deepcopy
 import time, random
 from collections import deque
@@ -21,7 +23,11 @@ from graph_game.multi_env_manager import Env_manager, Debugging_manager
 from alive_progress import alive_bar,alive_it
 from GN0.visualize_transitions import visualize_transitions
 from GN0.models import get_pre_defined
+from common.utils import get_highest_model_path
 
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+if not torch.cuda.is_available():
+    print("WARNING: cuda not avaliabe, using cpu")
 # torch.backends.cudnn.benchmark = True  # let cudnn heuristics choose fastest conv algorithm
 
 if __name__ == '__main__':
@@ -52,13 +58,17 @@ if __name__ == '__main__':
     print(f'Creating', args.parallel_envs, 'and decorrelating environment instances.', end='')
     decorr_steps = 20
     # env_manager = Env_manager(args.parallel_envs,args.hex_size,gamma=args.gamma)
-    env_manager = Env_manager(args.parallel_envs,args.hex_size,gamma=args.gamma)
+    env_manager = Env_manager(args.parallel_envs,args.hex_size,gamma=args.gamma,n_steps=[args.n_step])
     for _ in range(decorr_steps):
         env_manager.step(env_manager.sample())
     states = env_manager.observe()
     print('Done.')
 
-    rainbow = Rainbow(env_manager, lambda :get_pre_defined(args.model_name), args)
+    rainbow = Rainbow(env_manager, lambda :get_pre_defined(args.model_name,args), args)
+    # args_cp = Namespace(**vars(args))
+    # args_cp.noisy_dqn = True
+    # old_model = get_pre_defined(args.model_name,args_cp).to(device)
+    # elo = rainbow.join_elo_league("jumping-terrain",get_highest_model_path("jumping-terrain-85"),model=old_model)
     if args.load_model is not None:
         print("Loading model",args.load_model)
         stuff = torch.load(args.load_model)
@@ -94,10 +104,9 @@ if __name__ == '__main__':
     q_values_all = []
     starting_states = states
     state_history,reward_history,done_history,action_history = [],[],[],[]
-    last_maker_checkpoint = None
-    last_breaker_checkpoint = None
+    last_checkpoint = None
     hex_size = args.hex_size
-    batch_size = args.batch_size + 128*(11-hex_size)
+    batch_size = args.batch_size# + 128*(11-hex_size)
     next_jump = time.perf_counter()+4800
 
     # main training loop:
@@ -113,11 +122,11 @@ if __name__ == '__main__':
 
             # reset the noisy-nets noise in the policy
             if args.noisy_dqn:
-                rainbow.reset_noise(rainbow.maker_q_policy)
-                rainbow.reset_noise(rainbow.breaker_q_policy)
+                rainbow.reset_noise(rainbow.q_policy)
 
             # compute actions to take in all parallel envs, asynchronously start environment step
             actions = rainbow.act(states, eps)
+
             if env_manager.global_onturn == "m":
                 stats["maker"]["actions"].append(torch.mean(actions.float()).item())
             else:
@@ -128,9 +137,8 @@ if __name__ == '__main__':
             if rainbow.maker_buffer.burnedin and rainbow.breaker_buffer.burnedin:
                 # print("Training",args.train_count)
                 for train_iter in range(args.train_count):
-                    if args.noisy_dqn and train_iter > 0: rainbow.reset_noise(rainbow.maker_q_policy)
-                    if args.noisy_dqn and train_iter > 0: rainbow.reset_noise(rainbow.breaker_q_policy)
-                    for player in ("maker","breaker"):
+                    if args.noisy_dqn and train_iter > 0: rainbow.reset_noise(rainbow.q_policy)
+                    for player in ("breaker","maker"):
                         q, targets, loss, grad_norm, reward = rainbow.train(batch_size, maker=player=="maker", beta=per_beta, add_cache=train_iter==args.train_count-1)
                         stats[player]["targets"].append(targets)
                         stats[player]["losses"].append(loss)
@@ -157,18 +165,22 @@ if __name__ == '__main__':
             # print("stepped")
             if len(state_history) >= args.num_required_repeated_actions:
                 transitions_maker,transitions_breaker = env_manager.get_transitions(starting_states,state_history,action_history,reward_history,done_history)
-                for state, action, reward, next_state, done in transitions_maker:
-                    assert torch.all(state.x[:,2]==1) and torch.all(next_state.x[:,2]==1)
-                    rainbow.maker_buffer.put_simple(state, action, reward, next_state, done)
                 for state, action, reward, next_state, done in transitions_breaker:
                     assert torch.all(state.x[:,2]==0) and torch.all(next_state.x[:,2]==0)
+                    assert action<len(state.x)
                     rainbow.breaker_buffer.put_simple(state, action, reward, next_state, done)
 
-                starting_states = state_history[-2]
-                state_history = [state_history[-1]]
-                action_history = [action_history[-1]]
-                reward_history = [reward_history[-1]]
-                done_history = [done_history[-1]]
+                for state, action, reward, next_state, done in transitions_maker:
+                    assert torch.all(state.x[:,2]==1) and torch.all(next_state.x[:,2]==1)
+                    assert action<len(state.x)
+                    rainbow.maker_buffer.put_simple(state, action, reward, next_state, done)
+
+                starting_states = state_history[-(args.n_step+1)]
+                state_history = state_history[-args.n_step:]
+                action_history = action_history[-args.n_step:]
+                reward_history = reward_history[-args.n_step:]
+                done_history = done_history[-args.n_step:]
+                next_states = [x.to(device) for x in next_states]
             states = next_states
             # print("tryin to record metrics")
 
@@ -188,22 +200,23 @@ if __name__ == '__main__':
                 torch.cuda.empty_cache()
 
 
-            if game_frame % (160_000-(160_000 % args.parallel_envs)) == 0:
-                last_maker_checkpoint, last_breaker_checkpoint = rainbow.save(
+            if game_frame % (30_000-(30_000 % args.parallel_envs)) == 0:
+                rainbow.disable_noise(rainbow.q_policy)
+                last_checkpoint = rainbow.save(
                         game_frame, args=args, run_name=wandb.run.name, run_id=wandb.run.id,
                         target_metric=np.mean(stats["returns"]), returns_all=returns_all, q_values_all=q_values_all
                 )
-                maker_elo,breaker_elo = rainbow.join_elo_league(game_frame,last_maker_checkpoint,last_breaker_checkpoint)
-                additional_logs["maker_elo"] = maker_elo
-                additional_logs["breaker_elo"] = breaker_elo
+                elo = rainbow.join_elo_league(game_frame,last_checkpoint)
+                additional_logs["elo"] = elo
                 columns,data = rainbow.elo_handler.get_rating_table()
                 additional_logs["rating_table"] = wandb.Table(columns = columns, data = data)
                 first_move_maker, first_move_breaker = rainbow.get_first_move_plots()
                 additional_logs["first_move_maker"] = wandb.Image(first_move_maker)
                 additional_logs["first_move_breaker"] = wandb.Image(first_move_breaker)
                 print(f'Model saved at {game_frame} frames.')
+                rainbow.reset_noise(rainbow.q_policy)
 
-            if time.perf_counter()>next_jump:
+            if time.perf_counter()>next_jump and False:
                 next_jump = time.perf_counter()+4800
                 if hex_size<11:
                     hex_size+=1
@@ -214,17 +227,19 @@ if __name__ == '__main__':
                     env_manager.change_hex_size(hex_size)
                     starting_states = env_manager.observe()
                     state_history,reward_history,done_history,action_history = [],[],[],[]
-                    eps_schedule = LinearSchedule(game_frame, initial_value=max(args.init_eps/4,args.final_eps), final_value=args.final_eps, decay_time=args.eps_decay_frames/2)
-                else:
-                    eps_schedule = LinearSchedule(game_frame, initial_value=args.final_eps, final_value=0.01, decay_time=args.eps_decay_frames*5)
-                    next_jump = time.perf_counter()+1000000
+                    # eps_schedule = LinearSchedule(game_frame, initial_value=max(args.init_eps/4,args.final_eps), final_value=args.final_eps, decay_time=args.eps_decay_frames/2)
+                # else:
+                #     eps_schedule = LinearSchedule(game_frame, initial_value=args.final_eps, final_value=0.01, decay_time=args.eps_decay_frames*5)
+                #     next_jump = time.perf_counter()+1000000
 
             if game_frame % (40_000-(40_000 % args.parallel_envs)) == 0 and rainbow.maker_buffer.burnedin:
                 print("going for eval!")
-                if last_maker_checkpoint is None:
+                rainbow.disable_noise(rainbow.q_policy)
+                if last_checkpoint is None:
                     additional_logs.update(rainbow.evaluate_models())
                 else:
-                    additional_logs.update(rainbow.evaluate_models(last_maker_checkpoint,last_breaker_checkpoint))
+                    additional_logs.update(rainbow.evaluate_models(last_checkpoint))
+                rainbow.reset_noise(rainbow.q_policy)
                 print(additional_logs)
 
             if (game_frame % (2_000-(2_000 % args.parallel_envs)) == 0 and game_frame > 0) or len(additional_logs)>0:

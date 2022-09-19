@@ -2,8 +2,14 @@ import zlib
 from copy import deepcopy
 import torch
 from tqdm.auto import trange
+import os
 
-
+def get_highest_model_path(tagname):
+    cdir = os.path.dirname(os.path.abspath(__file__))
+    stuff_dir = os.path.join(cdir,"..","checkpoints",tagname)
+    checkpoints = os.listdir(stuff_dir)
+    checkpoints.sort(key=lambda x:-int(x.split("_")[1].split(".")[0]))
+    return os.path.join(stuff_dir,checkpoints[0])
 
 def prep_observation_for_qnet(tensor, use_amp):
     """ Tranfer the tensor the gpu and reshape it into (batch, frame_stack*channels, y, x) """
