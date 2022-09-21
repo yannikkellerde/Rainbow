@@ -61,7 +61,7 @@ def read_args():
     parser.add_argument('--resolution', type=int, default=None, help='environment resolution (default is to use environment specific presets)')
 
     # dqn settings
-    parser.add_argument('--buffer_size', type=int, default=int(2 ** 18), help='capacity of experience replay buffer (must be a power of two)')
+    parser.add_argument('--buffer_size', type=int, default=int(2 ** 17), help='capacity of experience replay buffer (must be a power of two)')
     parser.add_argument('--burnin', type=int, default=100_000, help='how many transitions should be in the buffer before start of training')
     parser.add_argument('--gamma', type=float, default=0.99, help='reward discount factor')
     parser.add_argument('--sync_dqn_target_every', type=int, default=32_000, help='sync Q target net every n frames')

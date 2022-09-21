@@ -24,6 +24,7 @@ from alive_progress import alive_bar,alive_it
 from GN0.visualize_transitions import visualize_transitions
 from GN0.models import get_pre_defined
 from common.utils import get_highest_model_path
+import matplotlib.pyplot as plt
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 if not torch.cuda.is_available():
@@ -73,7 +74,8 @@ if __name__ == '__main__':
         print("Loading model",args.load_model)
         stuff = torch.load(args.load_model)
         rainbow.q_policy.load_state_dict(stuff["state_dict"])
-        # rainbow.q_policy.import_norm_cache(*stuff["cache"])
+        if hasattr(rainbow.q_policy,"supports_cache") and rainbow.q_policy.supports_cache:
+            rainbow.q_policy.import_norm_cache(*stuff["cache"])
         rainbow.opt.load_state_dict(stuff["optimizer_state_dict"])
         starting_frame = stuff["game_frame"]
     else:
@@ -138,7 +140,17 @@ if __name__ == '__main__':
                 # print("Training",args.train_count)
                 for train_iter in range(args.train_count):
                     if args.noisy_dqn and train_iter > 0: rainbow.reset_noise(rainbow.q_policy)
-                    for player in ("breaker","maker"):
+                    if (game_frame//args.parallel_envs)%2==0:  # Order matters, otherwise later one has advantage
+                        order = ("breaker","maker")
+                    else:
+                        order = ("maker","breaker")
+                    for player in order:
+                        if player == "maker" and np.mean(stats["returns"])>0 and random.random()<np.mean(stats["returns"]):
+                            print("skipping maker training",np.mean(stats["returns"]))
+                            continue
+                        if player == "breaker" and np.mean(stats["returns"])<0 and random.random()<-np.mean(stats["returns"]):
+                            print("skipping breaker training",np.mean(stats["returns"]))
+                            continue
                         q, targets, loss, grad_norm, reward = rainbow.train(batch_size, maker=player=="maker", beta=per_beta, add_cache=train_iter==args.train_count-1)
                         stats[player]["targets"].append(targets)
                         stats[player]["losses"].append(loss)
@@ -200,7 +212,7 @@ if __name__ == '__main__':
                 torch.cuda.empty_cache()
 
 
-            if game_frame % (30_000-(30_000 % args.parallel_envs)) == 0:
+            if game_frame % (160_000-(160_000 % args.parallel_envs)) == 0:
                 rainbow.disable_noise(rainbow.q_policy)
                 last_checkpoint = rainbow.save(
                         game_frame, args=args, run_name=wandb.run.name, run_id=wandb.run.id,
@@ -210,6 +222,7 @@ if __name__ == '__main__':
                 additional_logs["elo"] = elo
                 columns,data = rainbow.elo_handler.get_rating_table()
                 additional_logs["rating_table"] = wandb.Table(columns = columns, data = data)
+                plt.close("all")
                 first_move_maker, first_move_breaker = rainbow.get_first_move_plots()
                 additional_logs["first_move_maker"] = wandb.Image(first_move_maker)
                 additional_logs["first_move_breaker"] = wandb.Image(first_move_breaker)
@@ -232,7 +245,7 @@ if __name__ == '__main__':
                 #     eps_schedule = LinearSchedule(game_frame, initial_value=args.final_eps, final_value=0.01, decay_time=args.eps_decay_frames*5)
                 #     next_jump = time.perf_counter()+1000000
 
-            if game_frame % (40_000-(40_000 % args.parallel_envs)) == 0 and rainbow.maker_buffer.burnedin:
+            if game_frame % (80_000-(80_000 % args.parallel_envs)) == 0 and rainbow.maker_buffer.burnedin:
                 print("going for eval!")
                 rainbow.disable_noise(rainbow.q_policy)
                 if last_checkpoint is None:
