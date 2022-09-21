@@ -3,6 +3,7 @@ This file includes the model and environment setup and the main training loop.
 Look at the README.md file for details on how to use this.
 """
 
+import graph_tool.all    # Because import order matters apparently and not doing this results in error on some systems
 from argparse import Namespace
 
 from copy import deepcopy
