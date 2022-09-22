@@ -60,7 +60,7 @@ if __name__ == '__main__':
     print(f'Creating', args.parallel_envs, 'and decorrelating environment instances.', end='')
     decorr_steps = 20
     # env_manager = Env_manager(args.parallel_envs,args.hex_size,gamma=args.gamma)
-    env_manager = Env_manager(args.parallel_envs,args.hex_size,gamma=args.gamma,n_steps=[args.n_step])
+    env_manager = Env_manager(args.parallel_envs,args.hex_size,gamma=args.gamma,n_steps=[args.n_step],prune_exploratories=args.prune_exploratories)
     for _ in range(decorr_steps):
         env_manager.step(env_manager.sample())
     states = env_manager.observe()
@@ -84,8 +84,7 @@ if __name__ == '__main__':
     # wandb.watch(rainbow.maker_q_policy)
     # wandb.watch(rainbow.breaker_q_policy)
 
-    print('[blue bold]Running environment =', args.env_name,
-          '[blue bold]\nand config:', sn(**wandb_log_config))
+    print('[blue bold]\nconfig:', sn(**wandb_log_config))
 
     episode_count = 0
     stat_dict = {
@@ -103,14 +102,27 @@ if __name__ == '__main__':
             "lengths":deque(maxlen=100)
             }
 
+    growth_schedule = {6:(4,2),7:(5,2),8:(6,1),9:(8,1),10:(10,1),11:(12,1)}
+
     returns_all = []
     q_values_all = []
     starting_states = states
-    state_history,reward_history,done_history,action_history = [],[],[],[]
+    state_history,reward_history,done_history,action_history,exploratories_history = [],[],[],[],[]
     last_checkpoint = None
     hex_size = args.hex_size
-    batch_size = args.batch_size# + 128*(11-hex_size)
-    next_jump = time.perf_counter()+4800
+    batch_size = args.batch_size + 64*(11-hex_size)
+
+    checkpoint_frames = 160_000
+    eval_frames = 80_000
+    log_frames = 2_000
+    jumping_extra = 3600*3
+
+    if args.testing_mode:
+        checkpoint_frames = 20_000
+        eval_frames = 50_000
+        jumping_extra = 10
+
+    next_jump = time.perf_counter()+jumping_extra
 
     # main training loop:
     # we will do a total of args.training_frames/args.parallel_envs iterations
@@ -128,7 +140,7 @@ if __name__ == '__main__':
                 rainbow.reset_noise(rainbow.q_policy)
 
             # compute actions to take in all parallel envs, asynchronously start environment step
-            actions = rainbow.act(states, eps)
+            actions,exploratories = rainbow.act(states, eps)
 
             if env_manager.global_onturn == "m":
                 stats["maker"]["actions"].append(torch.mean(actions.float()).item())
@@ -175,9 +187,10 @@ if __name__ == '__main__':
             reward_history.append(rewards)
             done_history.append(dones)
             action_history.append(actions)
+            exploratories_history.append(exploratories)
             # print("stepped")
             if len(state_history) >= args.num_required_repeated_actions:
-                transitions_maker,transitions_breaker = env_manager.get_transitions(starting_states,state_history,action_history,reward_history,done_history)
+                transitions_maker,transitions_breaker = env_manager.get_transitions(starting_states,state_history,action_history,reward_history,done_history,exploratories_history)
                 for state, action, reward, next_state, done in transitions_breaker:
                     assert torch.all(state.x[:,2]==0) and torch.all(next_state.x[:,2]==0)
                     assert action<len(state.x)
@@ -193,6 +206,7 @@ if __name__ == '__main__':
                 action_history = action_history[-args.n_step:]
                 reward_history = reward_history[-args.n_step:]
                 done_history = done_history[-args.n_step:]
+                exploratories_history = exploratories_history[-args.n_step:]
                 next_states = [x.to(device) for x in next_states]
             states = next_states
             # print("tryin to record metrics")
@@ -213,7 +227,7 @@ if __name__ == '__main__':
                 torch.cuda.empty_cache()
 
 
-            if game_frame % (160_000-(160_000 % args.parallel_envs)) == 0:
+            if game_frame % (checkpoint_frames-(checkpoint_frames % args.parallel_envs)) == 0:
                 rainbow.disable_noise(rainbow.q_policy)
                 last_checkpoint = rainbow.save(
                         game_frame, args=args, run_name=wandb.run.name, run_id=wandb.run.id,
@@ -230,23 +244,31 @@ if __name__ == '__main__':
                 print(f'Model saved at {game_frame} frames.')
                 rainbow.reset_noise(rainbow.q_policy)
 
-            if time.perf_counter()>next_jump and False:
-                next_jump = time.perf_counter()+4800
+            if time.perf_counter()>next_jump and args.grow:
+                next_jump = time.perf_counter()+jumping_extra
                 if hex_size<11:
                     hex_size+=1
-                    batch_size = args.batch_size + 128*(11-hex_size)
+                    batch_size = args.batch_size + 64*(11-hex_size)
                     print(f"Increasing hex size to {hex_size}")
                     rainbow.maximum_nodes = hex_size**2
                     rainbow.elo_handler.size = hex_size
                     env_manager.change_hex_size(hex_size)
                     starting_states = env_manager.observe()
-                    state_history,reward_history,done_history,action_history = [],[],[],[]
-                    # eps_schedule = LinearSchedule(game_frame, initial_value=max(args.init_eps/4,args.final_eps), final_value=args.final_eps, decay_time=args.eps_decay_frames/2)
-                # else:
-                #     eps_schedule = LinearSchedule(game_frame, initial_value=args.final_eps, final_value=0.01, decay_time=args.eps_decay_frames*5)
-                #     next_jump = time.perf_counter()+1000000
+                    rainbow.q_policy.grow_width(growth_schedule[hex_size][0]+rainbow.q_policy.gnn.hidden_channels)
+                    rainbow.q_policy.grow_depth(growth_schedule[hex_size][1])
+                    rainbow.q_target.grow_width(growth_schedule[hex_size][0]+rainbow.q_target.gnn.hidden_channels)
+                    rainbow.q_target.grow_depth(growth_schedule[hex_size][1])
+                    args.hidden_channels+=growth_schedule[hex_size][0]
+                    args.num_layers+=growth_schedule[hex_size][1]
+                    rainbow.elo_handler.elo_league_contestants = list()
+                    last_checkpoint = None
+                    model_creation_func = lambda :get_pre_defined(args.model_name,args)
+                    rainbow.model_creation_func = model_creation_func
+                    rainbow.elo_handler.create_empty_models(model_creation_func)
+                    rainbow.opt = torch.optim.Adam(rainbow.q_policy.parameters(), lr=args.lr, eps=args.adam_eps)
+                    state_history,reward_history,done_history,action_history,exploratories_history = [],[],[],[],[]
 
-            if game_frame % (80_000-(80_000 % args.parallel_envs)) == 0 and rainbow.maker_buffer.burnedin:
+            if game_frame % (eval_frames-(eval_frames % args.parallel_envs)) == 0 and rainbow.maker_buffer.burnedin:
                 print("going for eval!")
                 rainbow.disable_noise(rainbow.q_policy)
                 if last_checkpoint is None:
@@ -256,7 +278,7 @@ if __name__ == '__main__':
                 rainbow.reset_noise(rainbow.q_policy)
                 print(additional_logs)
 
-            if (game_frame % (2_000-(2_000 % args.parallel_envs)) == 0 and game_frame > 0) or len(additional_logs)>0:
+            if (game_frame % (log_frames-(log_frames % args.parallel_envs)) == 0 and game_frame > 0) or len(additional_logs)>0:
                 log  = {}
 
                 for key,value in stats.items():

@@ -170,10 +170,11 @@ class Rainbow:
                 if isinstance(m, FactorizedNoisyLinear):
                     m.disable_noise()
 
-    def act(self, states, eps: float) -> Tensor:
+    def act(self, states, eps: float) -> Tuple[Tensor,Tensor]:
         """ computes an epsilon-greedy step with respect to the current policy self.q_policy """
         self.q_policy.eval()
         batch = Batch.from_data_list(states).to(device)
+        exploratories = np.zeros(len(batch.ptr)-1).astype(bool)
         assert torch.all(batch.x[:,2] == states[0].x[0,2])
         with torch.no_grad():
             action_values = self.q_policy(batch.x,batch.edge_index,graph_indices=batch.batch, advantages_only=True)
@@ -190,8 +191,9 @@ class Rainbow:
                 for i in range(actions.shape[0]):
                     if (batch.ptr[i+1]-batch.ptr[i]-2)==self.maximum_nodes or random.random() < eps: # First move: Random!
                         actions[i] = random.randint(2,int(torch.sum(batch.batch==i).item())-1)
+                        exploratories[i] = True
             self.q_policy.train()
-            return actions.cpu()
+            return actions.cpu(), exploratories
 
     @torch.no_grad()
     def td_target(self, reward: Tensor, next_state:Batch, done: Tensor):
