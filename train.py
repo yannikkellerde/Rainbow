@@ -52,7 +52,11 @@ if __name__ == '__main__':
 
     # create decay schedules for dqn's exploration epsilon and per's importance sampling (beta) parameter
     eps_schedule = LinearSchedule(0, initial_value=args.init_eps, final_value=args.final_eps, decay_time=args.eps_decay_frames)
-    per_beta_schedule = LinearSchedule(0, initial_value=args.prioritized_er_beta0, final_value=1.0, decay_time=args.prioritized_er_time)
+    if args.prioritized_er_time == 0:
+        per_beta_schedule = LinearSchedule(0, initial_value=args.prioritized_er_beta0, final_value=args.prioritized_er_beta0, decay_time=1)
+    else:
+        per_beta_schedule = LinearSchedule(0, initial_value=args.prioritized_er_beta0, final_value=1.0, decay_time=args.prioritized_er_time)
+
 
     # When using many (e.g. 64) environments in parallel, having all of them be correlated can be an issue.
     # To avoid this, we estimate the mean episode length for this environment and then take i*(mean ep length/parallel envs count)
