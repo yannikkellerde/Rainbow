@@ -162,10 +162,10 @@ if __name__ == '__main__':
                     else:
                         order = ("maker","breaker")
                     for player in order:
-                        if player == "maker" and np.mean(stats["returns"])>0 and random.random()<np.mean(stats["returns"]):
+                        if player == "maker" and np.mean(stats["returns"])>0 and random.random()<np.mean(stats["returns"])*2:
                             # print("skipping maker training",np.mean(stats["returns"]))
                             continue
-                        if player == "breaker" and np.mean(stats["returns"])<0 and random.random()<-np.mean(stats["returns"]):
+                        if player == "breaker" and np.mean(stats["returns"])<0 and random.random()<-np.mean(stats["returns"])*2:
                             # print("skipping breaker training",np.mean(stats["returns"]))
                             continue
                         q, targets, loss, grad_norm, reward = rainbow.train(batch_size, maker=player=="maker", beta=per_beta, add_cache=train_iter==args.train_count-1)
