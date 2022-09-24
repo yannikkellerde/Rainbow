@@ -25,7 +25,7 @@ def read_args():
     parser.add_argument('--decorr', type=parse_bool, default=True, help='try to decorrelate state/progress in parallel envs')
     parser.add_argument('--num_required_repeated_actions', type=int, default=20)
     parser.add_argument('--hex_size',type=int,default=11)
-    parser.add_argument('--norm', type=parse_bool, default=True, help='Use norm in graph net')
+    parser.add_argument('--norm', type=parse_bool, default=False, help='Use norm in graph net')
     parser.add_argument('--load_model',type=str,default=None)
     parser.add_argument('--model_name',type=str,default="two_headed")
     parser.add_argument('--num_layers',type=int,default=13)

@@ -40,7 +40,7 @@ if __name__ == '__main__':
 
     # set up logging & model checkpoints
     wandb.init(project='rainbow_hex', save_code=True, config=dict(**wandb_log_config, log_version=100),
-               mode=('online' if args.use_wandb else 'offline'), anonymous='allow', tags=[args.wandb_tag] if args.wandb_tag else [])
+               mode=('online' if args.use_wandb else 'offline'), anonymous='allow', tags=args.wandb_tag.split(",") if args.wandb_tag else [])
     if args.use_wandb:
         save_dir = Path("checkpoints") / wandb.run.name
         save_dir.mkdir(parents=True)
@@ -187,11 +187,6 @@ if __name__ == '__main__':
             valid_actions = Env_manager.validate_actions(states,actions)
             
             next_states, rewards, dones, infos = env_manager.step(valid_actions)
-            state_history.append(next_states)
-            reward_history.append(rewards)
-            done_history.append(dones)
-            action_history.append(actions)
-            exploratories_history.append(exploratories)
             # print("stepped")
             if len(state_history) >= args.num_required_repeated_actions:
                 transitions_maker,transitions_breaker = env_manager.get_transitions(starting_states,state_history,action_history,reward_history,done_history,exploratories_history)
@@ -212,6 +207,12 @@ if __name__ == '__main__':
                 done_history = done_history[-args.n_step:]
                 exploratories_history = exploratories_history[-args.n_step:]
                 next_states = [x.to(device) for x in next_states]
+
+            state_history.append(next_states)
+            reward_history.append(rewards)
+            done_history.append(dones)
+            action_history.append(actions)
+            exploratories_history.append(exploratories)
             states = next_states
             # print("tryin to record metrics")
 
