@@ -106,7 +106,7 @@ if __name__ == '__main__':
             "lengths":deque(maxlen=100)
             }
 
-    growth_schedule = {6:(4,2),7:(5,2),8:(6,1),9:(8,1),10:(10,1),11:(12,1)}
+    growth_schedule = {6:(7,2,3600*3),7:(8,2,3600*5),8:(9,2,3600*7),9:(10,2,3600*9),10:(11,2,3600*11),11:(12,2,3600*1000)}
 
     returns_all = []
     q_values_all = []
@@ -119,7 +119,7 @@ if __name__ == '__main__':
     checkpoint_frames = 160_000
     eval_frames = 80_000
     log_frames = 2_000
-    jumping_extra = 3600*3
+    jumping_extra = int(3600*1.7)
 
     if args.testing_mode:
         checkpoint_frames = 20_000
@@ -250,9 +250,9 @@ if __name__ == '__main__':
                 rainbow.reset_noise(rainbow.q_policy)
 
             if time.perf_counter()>next_jump and args.grow:
-                next_jump = time.perf_counter()+jumping_extra
                 if hex_size<11:
                     hex_size+=1
+                    next_jump = time.perf_counter()+growth_schedule[hex_size][2]
                     batch_size = args.batch_size + 64*(11-hex_size)
                     print(f"Increasing hex size to {hex_size}")
                     rainbow.maximum_nodes = hex_size**2
@@ -272,6 +272,9 @@ if __name__ == '__main__':
                     rainbow.elo_handler.create_empty_models(model_creation_func)
                     rainbow.opt = torch.optim.Adam(rainbow.q_policy.parameters(), lr=args.lr, eps=args.adam_eps)
                     state_history,reward_history,done_history,action_history,exploratories_history = [],[],[],[],[]
+                else:
+                    next_jump = time.perf_counter()+100000000
+
 
             if game_frame % (eval_frames-(eval_frames % args.parallel_envs)) == 0 and rainbow.maker_buffer.burnedin:
                 print("going for eval!")
@@ -296,6 +299,8 @@ if __name__ == '__main__':
                 log["hex_size"] = hex_size
                 log["batch_size"] = batch_size
                 log["game_frame"] = game_frame
+                log["hidden_channels"] = args.hidden_channels
+                log["num_layers"] = args.num_layers
                 if eps > 0: log['epsilon'] = eps
                 if len(additional_logs)>0:
                     for key,value in additional_logs.items():
