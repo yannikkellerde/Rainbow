@@ -106,7 +106,7 @@ if __name__ == '__main__':
             "lengths":deque(maxlen=100)
             }
 
-    growth_schedule = {6:(7,2,3600*3),7:(8,2,3600*5),8:(9,2,3600*7),9:(10,2,3600*9),10:(11,2,3600*11),11:(12,2,3600*1000)}
+    growth_schedule = {6:(7,2,3600*10),7:(8,2,3600*15),8:(9,2,3600*20),9:(10,2,3600*25),10:(11,2,3600*30),11:(12,2,3600*1000)}
 
     returns_all = []
     q_values_all = []
@@ -119,7 +119,7 @@ if __name__ == '__main__':
     checkpoint_frames = 160_000
     eval_frames = 80_000
     log_frames = 2_000
-    jumping_extra = int(3600*1.7)
+    jumping_extra = int(3600*5)
 
     if args.testing_mode:
         checkpoint_frames = 20_000
@@ -162,10 +162,10 @@ if __name__ == '__main__':
                     else:
                         order = ("maker","breaker")
                     for player in order:
-                        if player == "maker" and np.mean(stats["returns"])>0 and random.random()<np.mean(stats["returns"])*2:
+                        if player == "maker" and np.mean(stats["returns"])>0 and random.random()<(np.mean(stats["returns"])*4):
                             # print("skipping maker training",np.mean(stats["returns"]))
                             continue
-                        if player == "breaker" and np.mean(stats["returns"])<0 and random.random()<-np.mean(stats["returns"])*2:
+                        if player == "breaker" and np.mean(stats["returns"])<0 and random.random()<(-np.mean(stats["returns"])*4):
                             # print("skipping breaker training",np.mean(stats["returns"]))
                             continue
                         q, targets, loss, grad_norm, reward = rainbow.train(batch_size, maker=player=="maker", beta=per_beta, add_cache=train_iter==args.train_count-1)
