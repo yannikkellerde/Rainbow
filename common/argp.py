@@ -29,6 +29,7 @@ def read_args():
     parser.add_argument('--load_model',type=str,default=None)
     parser.add_argument('--model_name',type=str,default="two_headed")
     parser.add_argument('--num_layers',type=int,default=13)
+    parser.add_argument('--num_head_layers',type=int,default=2)
     parser.add_argument('--hidden_channels',type=int,default=32)
     parser.add_argument('--prune_exploratories',type=parse_bool, default=True)
     parser.add_argument('--grow',type=parse_bool, default=False)
