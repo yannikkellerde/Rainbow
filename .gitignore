@@ -2,3 +2,4 @@
 /checkpoints/**/
 !/checkpoints/breezy-morning-37/checkpoint_breaker_32800000.pt
 !/checkpoints/breezy-morning-37/checkpoint_maker_32800000.pt
+wandb/

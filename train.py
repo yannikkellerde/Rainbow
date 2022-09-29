@@ -71,6 +71,13 @@ if __name__ == '__main__':
     print('Done.')
 
     rainbow = Rainbow(env_manager, lambda :get_pre_defined(args.model_name,args), args)
+
+    checkpath = get_highest_model_path("azure-snowball-157")
+    stuff = torch.load(checkpath,map_location=device)
+    old_model = get_pre_defined("two_headed",args=stuff["args"]).to(device)
+    old_model.load_state_dict(stuff["state_dict"])
+    rainbow.elo_handler.add_elo_league_contestant("old_model",checkpath,model=old_model)
+
     # args_cp = Namespace(**vars(args))
     # args_cp.noisy_dqn = True
     # old_model = get_pre_defined(args.model_name,args_cp).to(device)
@@ -106,7 +113,7 @@ if __name__ == '__main__':
             "lengths":deque(maxlen=100)
             }
 
-    growth_schedule = {6:(7,2,3600*10),7:(8,2,3600*15),8:(9,2,3600*20),9:(10,2,3600*25),10:(11,2,3600*30),11:(12,2,3600*1000)}
+    growth_schedule = {6:(8,5,3600*2,1),7:(8,5,3600*2,1),8:(8,5,3600*2,1),9:(8,5,3600*3,1),10:(8,5,3600*3,1),11:(8,5,3600*1000,0)}
 
     returns_all = []
     q_values_all = []
@@ -116,10 +123,10 @@ if __name__ == '__main__':
     hex_size = args.hex_size
     batch_size = args.batch_size + 64*(11-hex_size)
 
-    checkpoint_frames = 160_000
+    checkpoint_frames = 300_000
     eval_frames = 80_000
     log_frames = 2_000
-    jumping_extra = int(3600*5)
+    jumping_extra = int(3600*1)
 
     if args.testing_mode:
         checkpoint_frames = 20_000
@@ -263,9 +270,15 @@ if __name__ == '__main__':
                     rainbow.q_policy.grow_depth(growth_schedule[hex_size][1])
                     rainbow.q_target.grow_width(growth_schedule[hex_size][0]+rainbow.q_target.gnn.hidden_channels)
                     rainbow.q_target.grow_depth(growth_schedule[hex_size][1])
+                    if growth_schedule[hex_size][3]>0:
+                        rainbow.q_policy.maker_head.grow_depth(growth_schedule[hex_size][3])
+                        rainbow.q_policy.breaker_head.grow_depth(growth_schedule[hex_size][3])
+                        rainbow.q_target.maker_head.grow_depth(growth_schedule[hex_size][3])
+                        rainbow.q_target.breaker_head.grow_depth(growth_schedule[hex_size][3])
+                    args.num_head_layers+=growth_schedule[hex_size][3]
                     args.hidden_channels+=growth_schedule[hex_size][0]
                     args.num_layers+=growth_schedule[hex_size][1]
-                    rainbow.elo_handler.elo_league_contestants = list()
+                    rainbow.elo_handler.elo_league_contestants = [x for x in rainbow.elo_handler.elo_league_contestants if x["name"]=="old_model"]
                     last_checkpoint = None
                     model_creation_func = lambda :get_pre_defined(args.model_name,args)
                     rainbow.model_creation_func = model_creation_func
