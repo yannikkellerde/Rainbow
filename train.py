@@ -22,7 +22,6 @@ from common.rainbow import Rainbow
 from common.utils import LinearSchedule
 from graph_game.multi_env_manager import Env_manager, Debugging_manager
 from alive_progress import alive_bar,alive_it
-from GN0.visualize_transitions import visualize_transitions
 from GN0.models import get_pre_defined
 from common.utils import get_highest_model_path
 import matplotlib.pyplot as plt
@@ -39,6 +38,7 @@ if __name__ == '__main__':
     torch.manual_seed(args.seed)
 
     # set up logging & model checkpoints
+
     wandb.init(project='rainbow_hex', save_code=True, config=dict(**wandb_log_config, log_version=100),
                mode=('online' if args.use_wandb else 'offline'), anonymous='allow', tags=args.wandb_tag.split(",") if args.wandb_tag else [])
     if args.use_wandb:
@@ -72,11 +72,11 @@ if __name__ == '__main__':
 
     rainbow = Rainbow(env_manager, lambda :get_pre_defined(args.model_name,args), args)
 
-    checkpath = get_highest_model_path("azure-snowball-157")
+    checkpath = get_highest_model_path("misty-firebrand-26/"+args.hex_size)
     stuff = torch.load(checkpath,map_location=device)
     old_model = get_pre_defined("two_headed",args=stuff["args"]).to(device)
     old_model.load_state_dict(stuff["state_dict"])
-    rainbow.elo_handler.add_elo_league_contestant("old_model",checkpath,model=old_model)
+    rainbow.elo_handler.add_player(name="old_model",checkpoint=checkpath,model=old_model,set_rating=1500)
 
     # args_cp = Namespace(**vars(args))
     # args_cp.noisy_dqn = True
@@ -113,7 +113,7 @@ if __name__ == '__main__':
             "lengths":deque(maxlen=100)
             }
 
-    growth_schedule = {6:(8,5,3600*2,1),7:(8,5,3600*2,1),8:(8,5,3600*2,1),9:(8,5,3600*3,1),10:(8,5,3600*3,1),11:(8,5,3600*1000,0)}
+    growth_schedule = {6:(4,1,3600*2,0),7:(4,1,3600*2,1),8:(4,2,3600*2,0),9:(4,1,3600*3,0),10:(4,2,3600*3,1),11:(4,2,3600*1000,0)}
 
     returns_all = []
     q_values_all = []
@@ -245,8 +245,9 @@ if __name__ == '__main__':
                         game_frame, args=args, run_name=wandb.run.name, run_id=wandb.run.id,
                         target_metric=np.mean(stats["returns"]), returns_all=returns_all, q_values_all=q_values_all
                 )
-                elo = rainbow.join_elo_league(game_frame,last_checkpoint)
-                additional_logs["elo"] = elo
+                rainbow.run_roundrobin_with_new_agent(game_frame,last_checkpoint)
+                elo_fig = rainbow.elo_handler.plt_elo()
+                additional_logs["elo"] = elo_fig
                 columns,data = rainbow.elo_handler.get_rating_table()
                 additional_logs["rating_table"] = wandb.Table(columns = columns, data = data)
                 plt.close("all")
@@ -263,7 +264,7 @@ if __name__ == '__main__':
                     batch_size = args.batch_size + 64*(11-hex_size)
                     print(f"Increasing hex size to {hex_size}")
                     rainbow.maximum_nodes = hex_size**2
-                    rainbow.elo_handler.size = hex_size
+                    rainbow.elo_handler.reset(new_hex_size=hex_size,keep_players=["random","maker","breaker"])
                     env_manager.change_hex_size(hex_size)
                     starting_states = env_manager.observe()
                     rainbow.q_policy.grow_width(growth_schedule[hex_size][0]+rainbow.q_policy.gnn.hidden_channels)
@@ -278,13 +279,17 @@ if __name__ == '__main__':
                     args.num_head_layers+=growth_schedule[hex_size][3]
                     args.hidden_channels+=growth_schedule[hex_size][0]
                     args.num_layers+=growth_schedule[hex_size][1]
-                    rainbow.elo_handler.elo_league_contestants = [x for x in rainbow.elo_handler.elo_league_contestants if x["name"]=="old_model"]
                     last_checkpoint = None
                     model_creation_func = lambda :get_pre_defined(args.model_name,args)
                     rainbow.model_creation_func = model_creation_func
                     rainbow.elo_handler.create_empty_models(model_creation_func)
                     rainbow.opt = torch.optim.Adam(rainbow.q_policy.parameters(), lr=args.lr, eps=args.adam_eps)
                     state_history,reward_history,done_history,action_history,exploratories_history = [],[],[],[],[]
+                    checkpath = get_highest_model_path("misty-firebrand-26/"+hex_size)
+                    stuff = torch.load(checkpath,map_location=device)
+                    old_model = get_pre_defined("two_headed",args=stuff["args"]).to(device)
+                    old_model.load_state_dict(stuff["state_dict"])
+                    rainbow.elo_handler.add_player(name="old_model",checkpoint=checkpath,model=old_model,set_rating=1500)
                 else:
                     next_jump = time.perf_counter()+100000000
 

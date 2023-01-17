@@ -15,14 +15,13 @@ from torch import LongTensor,Tensor
 from common.replay_buffer import UniformReplayBuffer, PrioritizedReplayBuffer
 
 import math
-from GN0.models import Duelling,get_pre_defined,FactorizedNoisyLinear
-from GN0.util import visualize_graph
+from GN0.models import get_pre_defined,FactorizedNoisyLinear
 from graph_game.multi_env_manager import Env_manager
 from torch_geometric.data import Batch
 from torch_scatter import scatter, scatter_mean, scatter_max
-from GN0.evaluate_elo import Elo_handler, random_player
+from GN0.RainbowDQN.evaluate_elo import Elo_handler, random_player
 from graph_game.graph_tools_games import Hex_game
-from GN0.convert_graph import convert_node_switching_game
+from GN0.util.convert_graph import convert_node_switching_game
  
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 if not torch.cuda.is_available():
@@ -44,9 +43,12 @@ class Rainbow:
         self.q_target.load_state_dict(self.q_policy.state_dict())
 
         self.elo_handler = Elo_handler(args.hex_size,empty_model_func=lambda :model_creation_func().to(device),device=device)
-        self.elo_handler.add_player("maker",self.q_policy,set_rating=1500)
-        self.elo_handler.add_player("breaker",self.q_policy,set_rating=1500)
-        self.elo_handler.add_player("random",random_player,set_rating=1500,simple=True)
+        self.elo_handler.add_player("maker",self.q_policy,set_rating=None,rating_fixed=True)
+        self.elo_handler.add_player("breaker",self.q_policy,set_rating=None,rating_fixed=True)
+        self.elo_handler.add_player("random",random_player,set_rating=0,simple=True,rating_fixed=True)
+
+        self.roundrobin_players = args.roundrobin_players
+        self.roundrobin_games = args.roundrobin_games
 
         self.double_dqn = args.double_dqn
 
@@ -98,8 +100,9 @@ class Rainbow:
         return fig_maker,fig_breaker
         
 
-    def join_elo_league(self,game_frame,checkpoint,model=None):
-        return self.elo_handler.add_elo_league_contestant(str(game_frame)+"_"+str(math.sqrt(self.maximum_nodes)),checkpoint,model=model)
+    def run_roundrobin_with_new_agent(self,game_frame,checkpoint,model=None):
+        self.elo_handler.add_player(name=str(game_frame)+"_"+str(math.sqrt(self.maximum_nodes)),checkpoint=checkpoint,model=model,episode_number=game_frame)
+        self.elo_handler.roundrobin(self.roundrobin_players,self.roundrobin_games,["random","old_model"])
  
 
     def evaluate_models(self,checkpoint=None):
