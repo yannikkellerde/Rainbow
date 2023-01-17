@@ -79,8 +79,8 @@ class Rainbow:
         plt.clf()
         self.q_policy.eval()
         new_game = Hex_game(int(math.sqrt(self.maximum_nodes)))
-        to_pred_maker = convert_node_switching_game(new_game.view,global_input_properties=[1],need_backmap=True).to(device)
-        to_pred_breaker = convert_node_switching_game(new_game.view,global_input_properties=[0],need_backmap=True).to(device)
+        to_pred_maker = convert_node_switching_game(new_game.view,global_input_properties=[1],need_backmap=True,old_style=True).to(device)
+        to_pred_breaker = convert_node_switching_game(new_game.view,global_input_properties=[0],need_backmap=True,old_style=True).to(device)
         pred_maker = self.q_policy(to_pred_maker.x,to_pred_maker.edge_index).squeeze()
         pred_breaker = self.q_policy(to_pred_breaker.x,to_pred_breaker.edge_index).squeeze()
         maker_vinds = {to_pred_maker.backmap[int(i)]:value for i,value in enumerate(pred_maker) if int(i)>1}
@@ -101,8 +101,9 @@ class Rainbow:
         
 
     def run_roundrobin_with_new_agent(self,game_frame,checkpoint,model=None):
-        self.elo_handler.add_player(name=str(game_frame)+"_"+str(math.sqrt(self.maximum_nodes)),checkpoint=checkpoint,model=model,episode_number=game_frame)
-        self.elo_handler.roundrobin(self.roundrobin_players,self.roundrobin_games,["random","old_model"])
+        name = str(game_frame)+"_"+str(math.sqrt(self.maximum_nodes))
+        self.elo_handler.add_player(name=name,checkpoint=checkpoint,model=model,episode_number=game_frame)
+        self.elo_handler.roundrobin(self.roundrobin_players,self.roundrobin_games,[name,"random","old_model"])
  
 
     def evaluate_models(self,checkpoint=None):
@@ -125,19 +126,16 @@ class Rainbow:
             else:
                 print("Warning, no cache")
             nn.eval()
-            self.elo_handler.add_player("last_breaker",nn,set_rating=1500)
+            self.elo_handler.add_player("last_breaker",nn,set_rating=None,rating_fixed=True)
             maker_last_breaker = self.elo_handler.play_some_games("maker","last_breaker",num_games=128,temperature=0,random_first_move=True)
             additional_logs["maker_last_breaker_winrate"] = maker_last_breaker["maker"]/(maker_last_breaker["maker"]+maker_last_breaker["last_breaker"])
 
-            self.elo_handler.add_player("last_maker",nn,set_rating=1500)
+            self.elo_handler.add_player("last_maker",nn,set_rating=None,rating_fixed=True)
             breaker_last_maker = self.elo_handler.play_some_games("last_maker","breaker",num_games=128,temperature=0,random_first_move=True)
             additional_logs["breaker_last_maker_winrate"] = breaker_last_maker["breaker"]/(breaker_last_maker["breaker"]+breaker_last_maker["last_maker"])
             all_stats.extend([maker_last_breaker,breaker_last_maker])
 
-        self.elo_handler.score_some_statistics(all_stats)
-        print("Maker elo:",self.elo_handler.get_rating("maker"),"\nBreaker elo:",self.elo_handler.get_rating("breaker"),"\nRandom elo:",self.elo_handler.get_rating("random"))
-        if checkpoint is not None:
-            print("Last maker elo:",self.elo_handler.get_rating("last_maker"),"\nLast Breaker elo:",self.elo_handler.get_rating("last_breaker"))
+        # self.elo_handler.score_some_statistics(all_stats)
         self.q_policy.train()
 
         return additional_logs
@@ -187,7 +185,9 @@ class Rainbow:
             actions = actions.squeeze()-batch.ptr[:-1]
             if 1 in actions or 0 in actions:
                 evil = (torch.logical_or(actions==0,actions == 1).nonzero(as_tuple=True)[0])
-                print(action_values[batch.batch==evil])
+                for e in evil:
+                    print(action_values[batch.batch==e])
+                    print(batch.x[batch.batch==e])
                 raise ValueError("Selected evil vertex")
 
             if eps > 0:

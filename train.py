@@ -68,15 +68,17 @@ if __name__ == '__main__':
     for _ in range(decorr_steps):
         env_manager.step(env_manager.sample())
     states = env_manager.observe()
+    # for i,state in enumerate(states):
+    #     print(state.x.shape,env_manager.envs[i].who_won())
     print('Done.')
 
     rainbow = Rainbow(env_manager, lambda :get_pre_defined(args.model_name,args), args)
 
-    checkpath = get_highest_model_path("misty-firebrand-26/"+args.hex_size)
+    checkpath = get_highest_model_path(f"misty-firebrand-26/{args.hex_size}")
     stuff = torch.load(checkpath,map_location=device)
     old_model = get_pre_defined("two_headed",args=stuff["args"]).to(device)
     old_model.load_state_dict(stuff["state_dict"])
-    rainbow.elo_handler.add_player(name="old_model",checkpoint=checkpath,model=old_model,set_rating=1500)
+    rainbow.elo_handler.add_player(name="old_model",checkpoint=checkpath,model=old_model,set_rating=None)
 
     # args_cp = Namespace(**vars(args))
     # args_cp.noisy_dqn = True
@@ -112,8 +114,7 @@ if __name__ == '__main__':
             "returns":deque(maxlen=100),
             "lengths":deque(maxlen=100)
             }
-
-    growth_schedule = {6:(4,1,3600*2,0),7:(4,1,3600*2,1),8:(4,2,3600*2,0),9:(4,1,3600*3,0),10:(4,2,3600*3,1),11:(4,2,3600*1000,0)}
+    growth_schedule = {6:(6,3,3600*2,1),7:(6,3,3600*2,1),8:(6,3,3600*2,1),9:(6,3,3600*3,1),10:(8,5,3600*3,1),11:(8,5,3600*1000,0)}
 
     returns_all = []
     q_values_all = []
@@ -126,7 +127,7 @@ if __name__ == '__main__':
     checkpoint_frames = 300_000
     eval_frames = 80_000
     log_frames = 2_000
-    jumping_extra = int(3600*1)
+    jumping_extra = int(3600*2)
 
     if args.testing_mode:
         checkpoint_frames = 20_000
@@ -249,6 +250,11 @@ if __name__ == '__main__':
                 elo_fig = rainbow.elo_handler.plt_elo()
                 additional_logs["elo"] = elo_fig
                 columns,data = rainbow.elo_handler.get_rating_table()
+                if len(data)<2:
+                    best_elo = 0
+                else:
+                    best_elo = data[1][1] if data[0][0]=="old_model" else data[0][1]
+                additional_logs["elo_gap_to_old"] = best_elo-rainbow.elo_handler.get_rating("old_model")
                 additional_logs["rating_table"] = wandb.Table(columns = columns, data = data)
                 plt.close("all")
                 first_move_maker, first_move_breaker = rainbow.get_first_move_plots()
@@ -285,11 +291,11 @@ if __name__ == '__main__':
                     rainbow.elo_handler.create_empty_models(model_creation_func)
                     rainbow.opt = torch.optim.Adam(rainbow.q_policy.parameters(), lr=args.lr, eps=args.adam_eps)
                     state_history,reward_history,done_history,action_history,exploratories_history = [],[],[],[],[]
-                    checkpath = get_highest_model_path("misty-firebrand-26/"+hex_size)
+                    checkpath = get_highest_model_path(f"misty-firebrand-26/{args.hex_size}")
                     stuff = torch.load(checkpath,map_location=device)
                     old_model = get_pre_defined("two_headed",args=stuff["args"]).to(device)
                     old_model.load_state_dict(stuff["state_dict"])
-                    rainbow.elo_handler.add_player(name="old_model",checkpoint=checkpath,model=old_model,set_rating=1500)
+                    rainbow.elo_handler.add_player(name="old_model",checkpoint=checkpath,model=old_model,set_rating=None)
                 else:
                     next_jump = time.perf_counter()+100000000
 

@@ -16,7 +16,7 @@ def read_args():
                                                  '  - individial components of Rainbow can be adjusted with cli args (below)\n'),
                                      formatter_class=argparse.RawTextHelpFormatter)
     parser.add_argument('--roundrobin_players', type=int, default=10, help='How many player will play in each roundrobin elo tournament')
-    parser.add_argument('--roundrobin_games', type=int, default=10, help='How many games will be played in each matchup of the roundrobin tournament')
+    parser.add_argument('--roundrobin_games', type=int, default=12, help='How many games will be played in each matchup of the roundrobin tournament')
 
     # training settings
     parser.add_argument('--training_frames', type=int, default=100_000_000, help='train for n environment interactions ("game_frames" in the code)')
