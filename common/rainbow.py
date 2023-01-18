@@ -103,7 +103,7 @@ class Rainbow:
     def run_roundrobin_with_new_agent(self,game_frame,checkpoint,model=None):
         name = str(game_frame)+"_"+str(math.sqrt(self.maximum_nodes))
         self.elo_handler.add_player(name=name,checkpoint=checkpoint,model=model,episode_number=game_frame)
-        self.elo_handler.roundrobin(self.roundrobin_players,self.roundrobin_games,[name,"random","old_model"])
+        return self.elo_handler.roundrobin(self.roundrobin_players,self.roundrobin_games,[name,"random","old_model"])
  
 
     def evaluate_models(self,checkpoint=None):

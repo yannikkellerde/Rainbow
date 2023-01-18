@@ -252,7 +252,8 @@ if __name__ == '__main__':
                         game_frame, args=args, run_name=wandb.run.name, run_id=wandb.run.id,
                         target_metric=np.mean(stats["returns"]), returns_all=returns_all, q_values_all=q_values_all
                 )
-                rainbow.run_roundrobin_with_new_agent(game_frame,last_checkpoint)
+                cols, performances = rainbow.run_roundrobin_with_new_agent(game_frame,last_checkpoint)
+                additional_logs["performance_table"] = wandb.Table(columns = cols, data = list(performances))
                 elo_fig = rainbow.elo_handler.plt_elo()
                 additional_logs["elo"] = elo_fig
                 columns,data = rainbow.elo_handler.get_rating_table()
