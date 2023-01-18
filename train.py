@@ -298,7 +298,7 @@ if __name__ == '__main__':
                     rainbow.elo_handler.create_empty_models(model_creation_func)
                     rainbow.opt = torch.optim.Adam(rainbow.q_policy.parameters(), lr=args.lr, eps=args.adam_eps)
                     state_history,reward_history,done_history,action_history,exploratories_history = [],[],[],[],[]
-                    checkpath = get_highest_model_path(f"misty-firebrand-26/{args.hex_size}")
+                    checkpath = get_highest_model_path(f"misty-firebrand-26/{hex_size}")
                     stuff = torch.load(checkpath,map_location=device)
                     old_model = get_pre_defined("two_headed",args=stuff["args"]).to(device)
                     old_model.load_state_dict(stuff["state_dict"])
