@@ -3,6 +3,7 @@ This file includes the model and environment setup and the main training loop.
 Look at the README.md file for details on how to use this.
 """
 
+
 import graph_tool.all    # Because import order matters apparently and not doing this results in error on some systems
 from argparse import Namespace
 
@@ -16,6 +17,7 @@ import torch, wandb
 import numpy as np
 
 from rich import print
+from rtpt import RTPT
 
 from common import argp
 from common.rainbow import Rainbow
@@ -79,6 +81,10 @@ if __name__ == '__main__':
     old_model = get_pre_defined("two_headed",args=stuff["args"]).to(device)
     old_model.load_state_dict(stuff["state_dict"])
     rainbow.elo_handler.add_player(name="old_model",checkpoint=checkpath,model=old_model,set_rating=None)
+    rtpt = RTPT(name_initials="YK",
+                experiment_name=f'Rainbow_Hex',
+                max_iterations=args.training_frames, moving_avg_window_size=1,update_interval=10)
+    rtpt.start()
 
     # args_cp = Namespace(**vars(args))
     # args_cp.noisy_dqn = True
@@ -335,6 +341,7 @@ if __name__ == '__main__':
 
             bar.text = f' [{game_frame:>8} frames, {episode_count:>5} episodes]'
             bar()
+            rtpt.step()
 
     wandb.log({'x/game_frame': game_frame + args.parallel_envs, 'x/episode': episode_count,
                'x/train_step': (game_frame + args.parallel_envs) // args.parallel_envs * args.train_count,
