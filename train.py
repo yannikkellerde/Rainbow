@@ -249,7 +249,7 @@ if __name__ == '__main__':
             if game_frame % (checkpoint_frames-(checkpoint_frames % args.parallel_envs)) == 0:
                 rainbow.disable_noise(rainbow.q_policy)
                 last_checkpoint = rainbow.save(
-                        game_frame, args=args, run_name=wandb.run.name, run_id=wandb.run.id,
+                        game_frame, hex_size=hex_size, args=args, run_name=wandb.run.name, run_id=wandb.run.id,
                         target_metric=np.mean(stats["returns"]), returns_all=returns_all, q_values_all=q_values_all
                 )
                 cols, performances = rainbow.run_roundrobin_with_new_agent(game_frame,last_checkpoint)

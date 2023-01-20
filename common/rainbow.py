@@ -1,4 +1,5 @@
 import random
+import os
 import matplotlib.pyplot as plt
 from functools import partial
 from types import SimpleNamespace
@@ -272,8 +273,9 @@ class Rainbow:
 
         return est_mean, gt_mean, loss.item(), grad_norm, reward_mean
 
-    def save_model(self, game_frame, **kwargs):
-        save_path = (self.save_dir + f"/checkpoint_{game_frame}.pt")
+    def save_model(self, game_frame, hex_size, **kwargs):
+        save_path = os.path.join(self.save_dir,str(hex_size),f"checkpoint_{game_frame}.pt")
+        os.makedirs(os.path.dirname(save_path),exist_ok=True)
         stuff = {**kwargs, 'state_dict': self.q_policy.state_dict(), 'game_frame':game_frame, 'optimizer_state_dict':self.opt.state_dict()}
         if self.q_policy.gnn.has_cache:
             stuff['cache'] = self.q_policy.export_norm_cache()
@@ -281,9 +283,9 @@ class Rainbow:
 
         return save_path
 
-    def save(self, game_frame, **kwargs):
+    def save(self, game_frame, hex_size, **kwargs):
         # save_path = (self.save_dir + f"/checkpoint_{game_frame}.pt")
-        return self.save_model(game_frame,**kwargs)
+        return self.save_model(game_frame,hex_size,**kwargs)
 
         # try:
         #     artifact = wandb.Artifact('saved_model', type='model')
