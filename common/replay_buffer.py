@@ -23,6 +23,9 @@ class UniformReplayBuffer:
         self.n_step = n_step
         self.n_step_buffers = [collections.deque(maxlen=self.n_step + 1) for j in range(parallel_envs)]
 
+    def change_capacity(self,new_capacity):
+        self.capacity = new_capacity
+
     @staticmethod
     def prepare_transition(state, next_state, action: int, reward: float, done: bool):
         action = torch.LongTensor([action]).to(device)
@@ -91,7 +94,7 @@ class PrioritizedReplayBuffer:
 
     def __init__(self, burnin: int, capacity: int, gamma: float, n_step: int, parallel_envs: int, use_amp):
         self.burnin = burnin
-        self.capacity = capacity  # must be a power of two
+        self.capacity = capacity
         self.gamma = gamma
         self.n_step = n_step
         self.n_step_buffers = [collections.deque(maxlen=self.n_step + 1) for j in range(parallel_envs)]
@@ -218,6 +221,27 @@ class PrioritizedReplayBuffer:
             priority_alpha = sqrt(priority)
             self._set_priority_min(idx, priority_alpha)
             self._set_priority_sum(idx, priority_alpha)
+
+    def change_capacity(self,new_capacity):
+        if new_capacity>self.capacity:
+            for i in range(new_capacity-self.capacity):
+                self.priority_min.append(float('inf'))
+                self.priority_min.append(float('inf'))
+                self.priority_sum.append(0)
+                self.priority_sum.append(0)
+                self.data.append(None)
+        elif new_capacity < self.capacity:
+            for i in range(new_capacity-self.capacity):
+                self.priority_min.pop()
+                self.priority_min.pop()
+                self.priority_sum.pop()
+                self.priority_sum.pop()
+                self.data.append(None)
+                if self.next_idx>=new_capacity:
+                    self.next_idx=0
+
+        self.capacity = new_capacity
+
 
     @property
     def is_full(self):
