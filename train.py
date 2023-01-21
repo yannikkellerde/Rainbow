@@ -80,7 +80,7 @@ if __name__ == '__main__':
     stuff = torch.load(checkpath,map_location=device)
     old_model = get_pre_defined("two_headed",args=stuff["args"]).to(device)
     old_model.load_state_dict(stuff["state_dict"])
-    rainbow.elo_handler.add_player(name="old_model",checkpoint=checkpath,model=old_model,set_rating=None)
+    rainbow.elo_handler.add_player(name="old_model",checkpoint=checkpath,model=old_model,set_rating=None,uses_empty_model=False)
     rtpt = RTPT(name_initials="YK",
                 experiment_name=f'Rainbow_Hex',
                 max_iterations=args.training_frames, moving_avg_window_size=1,update_interval=10)
@@ -302,7 +302,7 @@ if __name__ == '__main__':
                     stuff = torch.load(checkpath,map_location=device)
                     old_model = get_pre_defined("two_headed",args=stuff["args"]).to(device)
                     old_model.load_state_dict(stuff["state_dict"])
-                    rainbow.elo_handler.add_player(name="old_model",checkpoint=checkpath,model=old_model,set_rating=None)
+                    rainbow.elo_handler.add_player(name="old_model",checkpoint=checkpath,model=old_model,set_rating=None,uses_empty_model=False)
                 else:
                     next_jump = time.perf_counter()+100000000
 

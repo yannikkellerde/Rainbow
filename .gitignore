@@ -4,3 +4,4 @@
 !/checkpoints/breezy-morning-37/checkpoint_maker_32800000.pt
 wandb/
 *.pdf
+*.tar.gz
