@@ -55,7 +55,6 @@ if __name__ == '__main__':
 
     # create decay schedules for dqn's exploration epsilon and per's importance sampling (beta) parameter
     eps_schedule = LinearSchedule(0, initial_value=args.init_eps, final_value=args.final_eps, decay_time=args.eps_decay_frames)
-    buffer_size_schedule = LinearSchedule(0, initial_value=args.init_buffer_size, final_value=args.final_buffer_size, decay_time=args.buffer_size_change_frames)
     if args.prioritized_er_time == 0:
         per_beta_schedule = LinearSchedule(0, initial_value=args.prioritized_er_beta0, final_value=args.prioritized_er_beta0, decay_time=1)
     else:
@@ -152,9 +151,6 @@ if __name__ == '__main__':
             additional_logs = {}
             iter_start = time.time()
             eps = eps_schedule(game_frame)
-            capacity = buffer_size_schedule(game_frame)
-            rainbow.maker_buffer.change_capacity(int(capacity))
-            rainbow.breaker_buffer.change_capacity(int(capacity))
             per_beta = per_beta_schedule(game_frame)
 
             # reset the noisy-nets noise in the policy

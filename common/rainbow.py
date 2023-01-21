@@ -55,14 +55,14 @@ class Rainbow:
 
         self.prioritized_er = args.prioritized_er
         if self.prioritized_er:
-            self.maker_buffer = PrioritizedReplayBuffer(args.burnin, args.init_buffer_size, args.gamma, args.n_step, args.parallel_envs, use_amp=self.use_amp)
+            self.maker_buffer = PrioritizedReplayBuffer(args.burnin, args.buffer_size, args.gamma, args.n_step, args.parallel_envs, use_amp=self.use_amp)
         else:
-            self.maker_buffer = UniformReplayBuffer(args.burnin, args.init_buffer_size, args.gamma, args.n_step, args.parallel_envs, use_amp=self.use_amp)
+            self.maker_buffer = UniformReplayBuffer(args.burnin, args.buffer_size, args.gamma, args.n_step, args.parallel_envs, use_amp=self.use_amp)
 
         if self.prioritized_er:
-            self.breaker_buffer = PrioritizedReplayBuffer(args.burnin, args.init_buffer_size, args.gamma, args.n_step, args.parallel_envs, use_amp=self.use_amp)
+            self.breaker_buffer = PrioritizedReplayBuffer(args.burnin, args.buffer_size, args.gamma, args.n_step, args.parallel_envs, use_amp=self.use_amp)
         else:
-            self.breaker_buffer = UniformReplayBuffer(args.burnin, args.init_buffer_size, args.gamma, args.n_step, args.parallel_envs, use_amp=self.use_amp)
+            self.breaker_buffer = UniformReplayBuffer(args.burnin, args.buffer_size, args.gamma, args.n_step, args.parallel_envs, use_amp=self.use_amp)
 
         self.n_step_gamma = args.gamma ** args.n_step
 
