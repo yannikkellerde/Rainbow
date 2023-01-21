@@ -41,6 +41,7 @@ if __name__ == '__main__':
 
     # set up logging & model checkpoints
 
+    growth_schedule = {6:(6,3,3600*7,1),7:(6,3,3600*10,1),8:(6,3,3600*13,1),9:(6,3,3600*16,1),10:(8,5,3600*20,1),11:(8,5,3600*1000,0)}
     wandb.init(project='rainbow_hex', save_code=True, config=dict(**wandb_log_config, log_version=100, growth_schedule=growth_schedule),
                mode=('online' if args.use_wandb else 'offline'), anonymous='allow', tags=args.wandb_tag.split(",") if args.wandb_tag else [])
     if args.use_wandb:
@@ -120,7 +121,6 @@ if __name__ == '__main__':
             "returns":deque(maxlen=100),
             "lengths":deque(maxlen=100)
             }
-    growth_schedule = {6:(6,3,3600*7,1),7:(6,3,3600*10,1),8:(6,3,3600*13,1),9:(6,3,3600*16,1),10:(8,5,3600*20,1),11:(8,5,3600*1000,0)}
 
     returns_all = []
     q_values_all = []
