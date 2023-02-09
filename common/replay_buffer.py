@@ -89,12 +89,13 @@ class PrioritizedReplayBuffer:
     removed alpha hyperparameter like google/dopamine
     """
 
-    def __init__(self, burnin: int, capacity: int, gamma: float, n_step: int, parallel_envs: int, use_amp):
+    def __init__(self, burnin: int, capacity: int, gamma: float, n_step: int, parallel_envs: int, use_amp, cnn_mode=False):
         self.burnin = burnin
         self.capacity = capacity  # must be a power of two
         self.gamma = gamma
         self.n_step = n_step
         self.n_step_buffers = [collections.deque(maxlen=self.n_step + 1) for j in range(parallel_envs)]
+        self.cnn_mode = cnn_mode
 
         self.use_amp = use_amp
 
@@ -202,7 +203,12 @@ class PrioritizedReplayBuffer:
         for i in indices:
             samples.append(self.data[i])
 
-        return indices, weights, self.prepare_samples(samples)
+        return indices, weights, self.prepare_samples_cnn(samples) if self.cnn_mode else self.prepare_samples(samples)
+
+    def prepare_samples_cnn(self, batch):
+        state, next_state, action, reward, done = zip(*batch)
+        state,next_state,action, reward, done = map(torch.stack, [state, next_state, action, reward, done])
+        return state, next_state, action.squeeze(), reward.squeeze(), done.squeeze()
 
     def prepare_samples(self, batch):
         state, next_state, action, reward, done = zip(*batch)

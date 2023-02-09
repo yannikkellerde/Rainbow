@@ -67,7 +67,7 @@ if __name__ == '__main__':
     print(f'Creating', args.parallel_envs, 'and decorrelating environment instances.', end='')
     decorr_steps = 20
     # env_manager = Env_manager(args.parallel_envs,args.hex_size,gamma=args.gamma)
-    env_manager = Env_manager(args.parallel_envs,args.hex_size,gamma=args.gamma,n_steps=[args.n_step],prune_exploratories=args.prune_exploratories)
+    env_manager = Env_manager(args.parallel_envs,args.hex_size,gamma=args.gamma,n_steps=[args.n_step],prune_exploratories=args.prune_exploratories, cnn_rep=args.cnn_mode)
     for _ in range(decorr_steps):
         env_manager.step(env_manager.sample())
     states = env_manager.observe()
@@ -75,7 +75,7 @@ if __name__ == '__main__':
     #     print(state.x.shape,env_manager.envs[i].who_won())
     print('Done.')
 
-    rainbow = Rainbow(env_manager, lambda :get_pre_defined(args.model_name,args), args)
+    rainbow = Rainbow(env_manager, lambda :get_pre_defined(args.model_name,args), args, cnn_mode=args.cnn_mode)
 
     checkpath = get_highest_model_path(f"misty-firebrand-26/{args.hex_size}")
     stuff = torch.load(checkpath,map_location=device)
@@ -198,7 +198,10 @@ if __name__ == '__main__':
             # print("collect transitions")
             # block until environments are ready, then collect transitions and add them to the replay buffer
             # valid_actions = Env_manager.validate_actions(states,actions)
-            valid_actions = Env_manager.validate_actions(states,actions)
+            if args.cnn_mode:
+                valid_actions = env_manager.cnn_validate_actions(actions)
+            else:
+                valid_actions = Env_manager.validate_actions(states,actions)
             
             next_states, rewards, dones, infos = env_manager.step(valid_actions)
             # print("stepped")

@@ -32,8 +32,11 @@ class Rainbow:
     maker_buffer: Union[UniformReplayBuffer, PrioritizedReplayBuffer]
     breaker_buffer: Union[UniformReplayBuffer, PrioritizedReplayBuffer]
 
-    def __init__(self, env:Env_manager, model_creation_func, args: SimpleNamespace) -> None:
+    def __init__(self, env:Env_manager, model_creation_func, args: SimpleNamespace, cnn_mode=False) -> None:
         self.env:Env_manager = env
+        self.cnn_mode = cnn_mode
+        if self.cnn_mode:
+            self.starting_red_blue_sum = torch.sum(env.starting_obs[:2,:])
         self.save_dir = args.save_dir
         self.use_amp = args.use_amp
         self.maximum_nodes = args.hex_size**2
@@ -55,12 +58,12 @@ class Rainbow:
 
         self.prioritized_er = args.prioritized_er
         if self.prioritized_er:
-            self.maker_buffer = PrioritizedReplayBuffer(args.burnin, args.buffer_size, args.gamma, args.n_step, args.parallel_envs, use_amp=self.use_amp)
+            self.maker_buffer = PrioritizedReplayBuffer(args.burnin, args.buffer_size, args.gamma, args.n_step, args.parallel_envs, use_amp=self.use_amp, cnn_mode=self.cnn_mode)
         else:
             self.maker_buffer = UniformReplayBuffer(args.burnin, args.buffer_size, args.gamma, args.n_step, args.parallel_envs, use_amp=self.use_amp)
 
         if self.prioritized_er:
-            self.breaker_buffer = PrioritizedReplayBuffer(args.burnin, args.buffer_size, args.gamma, args.n_step, args.parallel_envs, use_amp=self.use_amp)
+            self.breaker_buffer = PrioritizedReplayBuffer(args.burnin, args.buffer_size, args.gamma, args.n_step, args.parallel_envs, use_amp=self.use_amp, cnn_mode=self.cnn_mode)
         else:
             self.breaker_buffer = UniformReplayBuffer(args.burnin, args.buffer_size, args.gamma, args.n_step, args.parallel_envs, use_amp=self.use_amp)
 
@@ -172,6 +175,23 @@ class Rainbow:
                 if isinstance(m, FactorizedNoisyLinear):
                     m.disable_noise()
 
+    def act_cnn(self, states, eps:float) -> Tuple[Tensor,Tensor]:
+        self.q_policy.eval()
+        batch = torch.stack(states).to(device)
+        exploratories = np.zeros(len(states)).astype(bool)
+        with torch.no_grad():
+            action_values = self.q_policy(batch,advantages_only=True)
+            action_values[torch.logical_or(batch[:,0].bool(),batch[:,1].bool())] = -5 # Exclude occupied squares
+
+            actions = torch.argmax(action_values,dim=1)
+            if eps > 0:
+                for i in range(actions.shape[0]):
+                    if torch.sum(states[i][:2,:])==self.starting_red_blue_sum or random.random() < eps: # First move: Random!
+                        actions[i] = random.randint(2,int(torch.sum(batch.batch==i).item())-1)
+                        exploratories[i] = True
+        self.q_policy.train()
+        return actions.cpu(), exploratories
+
     def act(self, states, eps: float) -> Tuple[Tensor,Tensor]:
         """ computes an epsilon-greedy step with respect to the current policy self.q_policy """
         self.q_policy.eval()
@@ -198,6 +218,20 @@ class Rainbow:
                         exploratories[i] = True
             self.q_policy.train()
             return actions.cpu(), exploratories
+
+    @torch.no_grad()
+    def cnn_td_target(self, reward: Tensor, next_state:Tensor, done: Tensor):
+        self.reset_noise(self.q_target)
+        if self.double_dqn:
+            advantages = self.q_policy(next_state,advantages_only=True)
+            best_action = torch.argmax(advantages,dim=1)
+            best_action = best_action.squeeze()
+            next_Q = self.q_target(next_state).squeeze()[best_action]
+            return reward + self.n_step_gamma * next_Q * (1 - done)
+        else:
+            advantages = self.q_target(next_state)
+            max_q = torch.max(advantages,dim=1)
+            return reward + self.n_step_gamma * max_q * (1 - done)
 
     @torch.no_grad()
     def td_target(self, reward: Tensor, next_state:Batch, done: Tensor):
@@ -231,13 +265,20 @@ class Rainbow:
             state, next_state, action, reward, done = buffer.sample(batch_size,beta=beta)
             reward_mean = torch.mean(reward[reward!=0]).cpu().item()
 
-        assert torch.all(state.x[:,2]==int(maker)) and torch.all(next_state.x[:,2]==int(maker))
+        if not self.cnn_mode:
+            assert torch.all(state.x[:,2]==int(maker)) and torch.all(next_state.x[:,2]==int(maker))
         self.opt.zero_grad()
         with autocast(enabled=self.use_amp):
-            true_action = action+state.ptr[:-1]
-            p_res = self.q_policy(state.x,state.edge_index,graph_indices=state.batch,ptr=state.ptr,set_cache=add_cache)
-            td_est = p_res[true_action]
-            td_tgt = self.td_target(reward, next_state, done)
+            if self.cnn_mode:
+                p_res = self.q_policy(state)
+                td_est = torch.tensor([p_res[i,action[i]] for i in range(len(action))])
+                td_tgt = self.td_target(reward, next_state, done)
+
+            else:
+                true_action = action+state.ptr[:-1]
+                p_res = self.q_policy(state.x,state.edge_index,graph_indices=state.batch,ptr=state.ptr,set_cache=add_cache)
+                td_est = p_res[true_action]
+                td_tgt = self.td_target(reward, next_state, done)
 
             if self.prioritized_er:
                 td_errors = td_est-td_tgt
