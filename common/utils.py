@@ -3,6 +3,7 @@ from copy import deepcopy
 import torch
 from tqdm.auto import trange
 import os
+from math import sqrt
 
 def get_highest_model_path(tagname):
     cdir = os.path.dirname(os.path.abspath(__file__))

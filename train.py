@@ -65,9 +65,9 @@ if __name__ == '__main__':
     # To avoid this, we estimate the mean episode length for this environment and then take i*(mean ep length/parallel envs count)
     # random steps in the i'th environment.
     print(f'Creating', args.parallel_envs, 'and decorrelating environment instances.', end='')
-    decorr_steps = 20
+    decorr_steps = 0
     # env_manager = Env_manager(args.parallel_envs,args.hex_size,gamma=args.gamma)
-    env_manager = Env_manager(args.parallel_envs,args.hex_size,gamma=args.gamma,n_steps=[args.n_step],prune_exploratories=args.prune_exploratories, cnn_rep=args.cnn_mode)
+    env_manager = Env_manager(args.parallel_envs,args.hex_size,gamma=args.gamma,n_steps=[args.n_step],prune_exploratories=args.prune_exploratories, cnn_rep=args.cnn_mode, cnn_hex_size=args.cnn_hex_size)
     for _ in range(decorr_steps):
         env_manager.step(env_manager.sample())
     states = env_manager.observe()
@@ -75,13 +75,13 @@ if __name__ == '__main__':
     #     print(state.x.shape,env_manager.envs[i].who_won())
     print('Done.')
 
-    rainbow = Rainbow(env_manager, lambda :get_pre_defined(args.model_name,args), args, cnn_mode=args.cnn_mode)
+    rainbow = Rainbow(env_manager, lambda :get_pre_defined(args.model_name,args), args)
 
-    checkpath = get_highest_model_path(f"misty-firebrand-26/{args.hex_size}")
-    stuff = torch.load(checkpath,map_location=device)
-    old_model = get_pre_defined("two_headed",args=stuff["args"]).to(device)
-    old_model.load_state_dict(stuff["state_dict"])
-    rainbow.elo_handler.add_player(name="old_model",checkpoint=checkpath,model=old_model,set_rating=None,uses_empty_model=False)
+    # checkpath = get_highest_model_path(f"misty-firebrand-26/{args.hex_size}")
+    # stuff = torch.load(checkpath,map_location=device)
+    # old_model = get_pre_defined("two_headed",args=stuff["args"]).to(device)
+    # old_model.load_state_dict(stuff["state_dict"])
+    # rainbow.elo_handler.add_player(name="old_model",checkpoint=checkpath,model=old_model,set_rating=None,uses_empty_model=False)
     rtpt = RTPT(name_initials="YK",
                 experiment_name=f'Rainbow_Hex',
                 max_iterations=args.training_frames, moving_avg_window_size=1,update_interval=10)
@@ -158,7 +158,10 @@ if __name__ == '__main__':
                 rainbow.reset_noise(rainbow.q_policy)
 
             # compute actions to take in all parallel envs, asynchronously start environment step
-            actions,exploratories = rainbow.act(states, eps)
+            if args.cnn_mode:
+                actions,exploratories = rainbow.act_cnn(states, eps)
+            else:
+                actions,exploratories = rainbow.act(states, eps)
 
             if env_manager.global_onturn == "m":
                 stats["maker"]["actions"].append(torch.mean(actions.float()).item())
@@ -208,13 +211,21 @@ if __name__ == '__main__':
             if len(state_history) >= args.num_required_repeated_actions:
                 transitions_maker,transitions_breaker = env_manager.get_transitions(starting_states,state_history,action_history,reward_history,done_history,exploratories_history)
                 for state, action, reward, next_state, done in transitions_breaker:
-                    assert torch.all(state.x[:,2]==0) and torch.all(next_state.x[:,2]==0)
-                    assert action<len(state.x)
+                    if args.cnn_mode:
+                        assert torch.all(state[2]==0) and torch.all(next_state[2]==0)
+                        assert action<state.shape[1]*state.shape[2]
+                    else:
+                        assert torch.all(state.x[:,2]==0) and torch.all(next_state.x[:,2]==0)
+                        assert action<len(state.x)
                     rainbow.breaker_buffer.put_simple(state, action, reward, next_state, done)
 
                 for state, action, reward, next_state, done in transitions_maker:
-                    assert torch.all(state.x[:,2]==1) and torch.all(next_state.x[:,2]==1)
-                    assert action<len(state.x)
+                    if args.cnn_mode:
+                        assert torch.all(state[2]==1) and torch.all(next_state[2]==1)
+                        assert action<state.shape[1]*state.shape[2]
+                    else:
+                        assert torch.all(state.x[:,2]==1) and torch.all(next_state.x[:,2]==1)
+                        assert action<len(state.x)
                     rainbow.maker_buffer.put_simple(state, action, reward, next_state, done)
 
                 starting_states = state_history[-(args.n_step+1)]
@@ -264,7 +275,7 @@ if __name__ == '__main__':
                     best_elo = 0
                 else:
                     best_elo = data[1][1] if data[0][0]=="old_model" else data[0][1]
-                additional_logs["elo_gap_to_old"] = best_elo-rainbow.elo_handler.get_rating("old_model")
+                # additional_logs["elo_gap_to_old"] = best_elo-rainbow.elo_handler.get_rating("old_model")
                 additional_logs["rating_table"] = wandb.Table(columns = columns, data = data)
                 plt.close("all")
                 first_move_maker, first_move_breaker = rainbow.get_first_move_plots()

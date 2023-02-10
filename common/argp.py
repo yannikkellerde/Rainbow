@@ -15,6 +15,10 @@ def read_args():
     parser = argparse.ArgumentParser(description=('Training framework for Rainbow DQN\n'
                                                  '  - individial components of Rainbow can be adjusted with cli args (below)\n'),
                                      formatter_class=argparse.RawTextHelpFormatter)
+    parser.add_argument("--cnn_body_filters",type=int,default=12)
+    parser.add_argument("--cnn_head_filters",type=int,default=2)
+    parser.add_argument("--cnn_hex_size",type=int,default=5)
+    parser.add_argument("--cnn_mode",type=parse_bool,default=False)
     parser.add_argument('--roundrobin_players', type=int, default=10, help='How many player will play in each roundrobin elo tournament')
     parser.add_argument('--roundrobin_games', type=int, default=12, help='How many games will be played in each matchup of the roundrobin tournament')
 
@@ -26,7 +30,7 @@ def read_args():
     parser.add_argument('--use_amp', type=parse_bool, default=False, help='whether to enable automatic mixed precision for the forward passes')
     parser.add_argument('--decorr', type=parse_bool, default=True, help='try to decorrelate state/progress in parallel envs')
     parser.add_argument('--num_required_repeated_actions', type=int, default=20)
-    parser.add_argument('--hex_size',type=int,default=11)
+    parser.add_argument('--hex_size',type=int,default=5)
     parser.add_argument('--norm', type=parse_bool, default=False, help='Use norm in graph net')
     parser.add_argument('--load_model',type=str,default=None)
     parser.add_argument('--model_name',type=str,default="two_headed")

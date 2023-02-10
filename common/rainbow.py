@@ -23,6 +23,7 @@ from torch_scatter import scatter, scatter_mean, scatter_max
 from GN0.RainbowDQN.evaluate_elo import Elo_handler, random_player
 from graph_game.graph_tools_games import Hex_game
 from GN0.util.convert_graph import convert_node_switching_game
+from GN0.util.util import downsample_cnn_outputs
  
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 if not torch.cuda.is_available():
@@ -32,14 +33,16 @@ class Rainbow:
     maker_buffer: Union[UniformReplayBuffer, PrioritizedReplayBuffer]
     breaker_buffer: Union[UniformReplayBuffer, PrioritizedReplayBuffer]
 
-    def __init__(self, env:Env_manager, model_creation_func, args: SimpleNamespace, cnn_mode=False) -> None:
+    def __init__(self, env:Env_manager, model_creation_func, args: SimpleNamespace) -> None:
         self.env:Env_manager = env
-        self.cnn_mode = cnn_mode
+        self.cnn_mode = args.cnn_mode
+        self.cnn_hex_size = args.cnn_hex_size
         if self.cnn_mode:
             self.starting_red_blue_sum = torch.sum(env.starting_obs[:2,:])
         self.save_dir = args.save_dir
         self.use_amp = args.use_amp
         self.maximum_nodes = args.hex_size**2
+        self.hex_size = args.hex_size
 
         self.model_creation_func = model_creation_func
         self.q_policy = model_creation_func().to(device)
@@ -47,9 +50,9 @@ class Rainbow:
         self.q_target.load_state_dict(self.q_policy.state_dict())
 
         self.elo_handler = Elo_handler(args.hex_size,empty_model_func=lambda :model_creation_func().to(device),device=device)
-        self.elo_handler.add_player("maker",self.q_policy,set_rating=None,rating_fixed=True,can_join_roundrobin=False,uses_empty_model=True)
-        self.elo_handler.add_player("breaker",self.q_policy,set_rating=None,rating_fixed=True,can_join_roundrobin=False,uses_empty_model=True)
-        self.elo_handler.add_player("random",random_player,set_rating=0,simple=True,rating_fixed=True,can_join_roundrobin=True,uses_empty_model=False)
+        self.elo_handler.add_player("maker",self.q_policy,set_rating=None,rating_fixed=True,can_join_roundrobin=False,uses_empty_model=True, cnn=self.cnn_mode, cnn_hex_size=self.cnn_hex_size if self.cnn_mode else None)
+        self.elo_handler.add_player("breaker",self.q_policy,set_rating=None,rating_fixed=True,can_join_roundrobin=False,uses_empty_model=True, cnn=self.cnn_mode, cnn_hex_size=self.cnn_hex_size if self.cnn_mode else None)
+        self.elo_handler.add_player("random",random_player,set_rating=0,simple=True,rating_fixed=True,can_join_roundrobin=True,uses_empty_model=False, cnn=self.cnn_mode, cnn_hex_size=self.cnn_hex_size if self.cnn_mode else None)
 
         self.roundrobin_players = args.roundrobin_players
         self.roundrobin_games = args.roundrobin_games
@@ -83,12 +86,21 @@ class Rainbow:
         plt.clf()
         self.q_policy.eval()
         new_game = Hex_game(int(math.sqrt(self.maximum_nodes)))
-        to_pred_maker = convert_node_switching_game(new_game.view,global_input_properties=[1],need_backmap=True,old_style=True).to(device)
-        to_pred_breaker = convert_node_switching_game(new_game.view,global_input_properties=[0],need_backmap=True,old_style=True).to(device)
-        pred_maker = self.q_policy(to_pred_maker.x,to_pred_maker.edge_index).squeeze()
-        pred_breaker = self.q_policy(to_pred_breaker.x,to_pred_breaker.edge_index).squeeze()
-        maker_vinds = {to_pred_maker.backmap[int(i)]:value for i,value in enumerate(pred_maker) if int(i)>1}
-        breaker_vinds = {to_pred_breaker.backmap[int(i)]:value for i,value in enumerate(pred_breaker) if int(i)>1}
+        if self.cnn_mode:
+            to_pred_maker = new_game.board.to_input_planes(self.cnn_hex_size).unsqueeze(0).to(device)
+            new_game.view.gp["m"] = not new_game.view.gp["m"]
+            to_pred_breaker = new_game.board.to_input_planes(self.cnn_hex_size).unsqueeze(0).to(device)
+            pred_maker = downsample_cnn_outputs(self.q_policy(to_pred_maker),self.hex_size).squeeze()
+            pred_breaker = downsample_cnn_outputs(self.q_policy(to_pred_breaker),self.hex_size).squeeze()
+            maker_vinds = {new_game.board.board_index_to_vertex_index[int(i)]:value for i,value in enumerate(pred_maker)}
+            breaker_vinds = {new_game.board.board_index_to_vertex_index[int(i)]:value for i,value in enumerate(pred_breaker)}
+        else:
+            to_pred_maker = convert_node_switching_game(new_game.view,global_input_properties=[1],need_backmap=True,old_style=True).to(device)
+            to_pred_breaker = convert_node_switching_game(new_game.view,global_input_properties=[0],need_backmap=True,old_style=True).to(device)
+            pred_maker = self.q_policy(to_pred_maker.x,to_pred_maker.edge_index).squeeze()
+            pred_breaker = self.q_policy(to_pred_breaker.x,to_pred_breaker.edge_index).squeeze()
+            maker_vinds = {to_pred_maker.backmap[int(i)]:value for i,value in enumerate(pred_maker) if int(i)>1}
+            breaker_vinds = {to_pred_breaker.backmap[int(i)]:value for i,value in enumerate(pred_breaker) if int(i)>1}
         maker_vprop = new_game.view.new_vertex_property("float")
         breaker_vprop = new_game.view.new_vertex_property("float")
         for key,value in maker_vinds.items():
@@ -97,17 +109,17 @@ class Rainbow:
         for key,value in breaker_vinds.items():
             breaker_vprop[new_game.view.vertex(key)] = value
 
+
         fig_maker = new_game.board.matplotlib_me(vprop=maker_vprop,color_based_on_vprop=True)
         fig_breaker = new_game.board.matplotlib_me(vprop=breaker_vprop,color_based_on_vprop=True)
-
         self.q_policy.train()
         return fig_maker,fig_breaker
         
 
     def run_roundrobin_with_new_agent(self,game_frame,checkpoint,model=None):
         name = str(game_frame)+"_"+str(math.sqrt(self.maximum_nodes))
-        self.elo_handler.add_player(name=name,checkpoint=checkpoint,model=model,episode_number=game_frame,uses_empty_model=True)
-        return self.elo_handler.roundrobin(self.roundrobin_players,self.roundrobin_games,[name,"random","old_model"])
+        self.elo_handler.add_player(name=name,checkpoint=checkpoint,model=model,episode_number=game_frame,uses_empty_model=True,cnn=self.cnn_mode, cnn_hex_size=self.cnn_hex_size if self.cnn_mode else None)
+        return self.elo_handler.roundrobin(self.roundrobin_players,self.roundrobin_games,[name,"random"])
  
 
     def evaluate_models(self,checkpoint=None):
@@ -130,11 +142,11 @@ class Rainbow:
             else:
                 print("Warning, no cache")
             nn.eval()
-            self.elo_handler.add_player("last_breaker",nn,set_rating=None,rating_fixed=True,can_join_roundrobin=False,uses_empty_model=True)
+            self.elo_handler.add_player("last_breaker",nn,set_rating=None,rating_fixed=True,can_join_roundrobin=False,uses_empty_model=True,cnn=self.cnn_mode,cnn_hex_size=self.cnn_hex_size if self.cnn_mode else None)
             maker_last_breaker = self.elo_handler.play_some_games("maker","last_breaker",num_games=128,temperature=0,random_first_move=True)
             additional_logs["maker_last_breaker_winrate"] = maker_last_breaker["maker"]/(maker_last_breaker["maker"]+maker_last_breaker["last_breaker"])
 
-            self.elo_handler.add_player("last_maker",nn,set_rating=None,rating_fixed=True,can_join_roundrobin=False,uses_empty_model=True)
+            self.elo_handler.add_player("last_maker",nn,set_rating=None,rating_fixed=True,can_join_roundrobin=False,uses_empty_model=True,cnn=self.cnn_mode,cnn_hex_size=self.cnn_hex_size if self.cnn_mode else None)
             breaker_last_maker = self.elo_handler.play_some_games("last_maker","breaker",num_games=128,temperature=0,random_first_move=True)
             additional_logs["breaker_last_maker_winrate"] = breaker_last_maker["breaker"]/(breaker_last_maker["breaker"]+breaker_last_maker["last_maker"])
             all_stats.extend([maker_last_breaker,breaker_last_maker])
@@ -180,14 +192,17 @@ class Rainbow:
         batch = torch.stack(states).to(device)
         exploratories = np.zeros(len(states)).astype(bool)
         with torch.no_grad():
-            action_values = self.q_policy(batch,advantages_only=True)
-            action_values[torch.logical_or(batch[:,0].bool(),batch[:,1].bool())] = -5 # Exclude occupied squares
+            action_values = downsample_cnn_outputs(self.q_policy(batch,advantages_only=True),self.hex_size)
+            mask = downsample_cnn_outputs(torch.logical_or(batch[:,0].reshape(batch.shape[0],-1).bool(),batch[:,1].reshape(batch.shape[0],-1).bool()),self.hex_size)
+            action_values[mask] = -5 # Exclude occupied squares
 
             actions = torch.argmax(action_values,dim=1)
             if eps > 0:
                 for i in range(actions.shape[0]):
                     if torch.sum(states[i][:2,:])==self.starting_red_blue_sum or random.random() < eps: # First move: Random!
-                        actions[i] = random.randint(2,int(torch.sum(batch.batch==i).item())-1)
+                        mask = downsample_cnn_outputs(torch.logical_not(torch.logical_or(states[i][0].flatten(),states[i][1].flatten())).to("cpu"),self.hex_size)
+                        legal_actions = torch.arange(0,len(mask))[mask]
+                        actions[i] = legal_actions[random.randint(0,len(legal_actions)-1)]
                         exploratories[i] = True
         self.q_policy.train()
         return actions.cpu(), exploratories
@@ -223,13 +238,13 @@ class Rainbow:
     def cnn_td_target(self, reward: Tensor, next_state:Tensor, done: Tensor):
         self.reset_noise(self.q_target)
         if self.double_dqn:
-            advantages = self.q_policy(next_state,advantages_only=True)
+            advantages = downsample_cnn_outputs(self.q_policy(next_state,advantages_only=True),self.hex_size)
             best_action = torch.argmax(advantages,dim=1)
             best_action = best_action.squeeze()
-            next_Q = self.q_target(next_state).squeeze()[best_action]
+            next_Q = torch.gather(downsample_cnn_outputs(self.q_target(next_state),self.hex_size),1,best_action.unsqueeze(1)).squeeze()
             return reward + self.n_step_gamma * next_Q * (1 - done)
         else:
-            advantages = self.q_target(next_state)
+            advantages = downsample_cnn_outputs(self.q_target(next_state),self.hex_size)
             max_q = torch.max(advantages,dim=1)
             return reward + self.n_step_gamma * max_q * (1 - done)
 
@@ -270,9 +285,9 @@ class Rainbow:
         self.opt.zero_grad()
         with autocast(enabled=self.use_amp):
             if self.cnn_mode:
-                p_res = self.q_policy(state)
-                td_est = torch.tensor([p_res[i,action[i]] for i in range(len(action))])
-                td_tgt = self.td_target(reward, next_state, done)
+                p_res = downsample_cnn_outputs(self.q_policy(state),self.hex_size)
+                td_est = torch.gather(p_res,1,action.unsqueeze(1)).squeeze()
+                td_tgt = self.cnn_td_target(reward, next_state, done)
 
             else:
                 true_action = action+state.ptr[:-1]
@@ -318,7 +333,7 @@ class Rainbow:
         save_path = os.path.join(self.save_dir,str(hex_size),f"checkpoint_{game_frame}.pt")
         os.makedirs(os.path.dirname(save_path),exist_ok=True)
         stuff = {**kwargs, 'state_dict': self.q_policy.state_dict(), 'game_frame':game_frame, 'optimizer_state_dict':self.opt.state_dict()}
-        if self.q_policy.gnn.has_cache:
+        if not self.cnn_mode and self.q_policy.gnn.has_cache:
             stuff['cache'] = self.q_policy.export_norm_cache()
         torch.save(stuff,save_path)
 
@@ -328,10 +343,3 @@ class Rainbow:
         # save_path = (self.save_dir + f"/checkpoint_{game_frame}.pt")
         return self.save_model(game_frame,hex_size,**kwargs)
 
-        # try:
-        #     artifact = wandb.Artifact('saved_model', type='model')
-        #     artifact.add_file(save_path)
-        #     wandb.run.log_artifact(artifact)
-        #     print(f'Saved model checkpoint at {game_frame} frames.')
-        # except Exception as e:
-        #     print('[bold red] Error while saving artifacts to wandb:', e)
