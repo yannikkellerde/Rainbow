@@ -37,6 +37,7 @@ class Rainbow:
         self.env:Env_manager = env
         self.cnn_mode = args.cnn_mode
         self.cnn_hex_size = args.cnn_hex_size
+        self.cnn_zero_fill = args.cnn_zero_fill
         if self.cnn_mode:
             self.starting_red_blue_sum = torch.sum(env.starting_obs[:2,:])
         self.save_dir = args.save_dir
@@ -87,9 +88,9 @@ class Rainbow:
         self.q_policy.eval()
         new_game = Hex_game(int(math.sqrt(self.maximum_nodes)))
         if self.cnn_mode:
-            to_pred_maker = new_game.board.to_input_planes(self.cnn_hex_size).unsqueeze(0).to(device)
+            to_pred_maker = new_game.board.to_input_planes(self.cnn_hex_size,zero_fill=self.cnn_zero_fill).unsqueeze(0).to(device)
             new_game.view.gp["m"] = not new_game.view.gp["m"]
-            to_pred_breaker = new_game.board.to_input_planes(self.cnn_hex_size).unsqueeze(0).to(device)
+            to_pred_breaker = new_game.board.to_input_planes(self.cnn_hex_size,zero_fill=self.cnn_zero_fill).unsqueeze(0).to(device)
             pred_maker = downsample_cnn_outputs(self.q_policy(to_pred_maker),self.hex_size).squeeze()
             pred_breaker = downsample_cnn_outputs(self.q_policy(to_pred_breaker),self.hex_size).squeeze()
             maker_vinds = {new_game.board.board_index_to_vertex_index[int(i)]:value for i,value in enumerate(pred_maker)}

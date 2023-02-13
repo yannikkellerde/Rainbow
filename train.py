@@ -67,7 +67,7 @@ if __name__ == '__main__':
     print(f'Creating', args.parallel_envs, 'and decorrelating environment instances.', end='')
     decorr_steps = 0
     # env_manager = Env_manager(args.parallel_envs,args.hex_size,gamma=args.gamma)
-    env_manager = Env_manager(args.parallel_envs,args.hex_size,gamma=args.gamma,n_steps=[args.n_step],prune_exploratories=args.prune_exploratories, cnn_rep=args.cnn_mode, cnn_hex_size=args.cnn_hex_size)
+    env_manager = Env_manager(args.parallel_envs,args.hex_size,gamma=args.gamma,n_steps=[args.n_step],prune_exploratories=args.prune_exploratories, cnn_rep=args.cnn_mode, cnn_hex_size=args.cnn_hex_size, cnn_zero_fill=args.cnn_zero_fill)
     for _ in range(decorr_steps):
         env_manager.step(env_manager.sample())
     states = env_manager.observe()
