@@ -240,6 +240,7 @@ class Rainbow:
         self.reset_noise(self.q_target)
         if self.double_dqn:
             advantages = downsample_cnn_outputs(self.q_policy(next_state,advantages_only=True),self.hex_size)
+            print(next_state.shape)
             mask = downsample_cnn_outputs(torch.logical_or(next_state[0].bool().flatten(),next_state[1].bool().flatten()),self.hex_size)
             advantages[mask] = -5 # Exclude occupied squares
             best_action = torch.argmax(advantages,dim=1)
