@@ -178,6 +178,10 @@ class PrioritizedReplayBuffer:
         state_planes, state_features, next_state_planes, next_state_features, action, reward, done = zip(*batch)
 
         state_planes, state_features, next_state_planes, next_state_features, action, reward, done = map(torch.stack, [state_planes, state_features, next_state_planes, next_state_features, action, reward, done])
+        state_planes = state_planes.to(self.device)
+        state_features = state_features.to(self.device)
+        next_state_planes = next_state_planes.to(self.device)
+        next_state_features = next_state_features.to(self.device)
         return state_planes,state_features,next_state_planes,next_state_features,action.squeeze(), reward.squeeze(), done.squeeze()
 
     def update_priorities(self, indexes, priorities):
