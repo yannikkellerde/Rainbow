@@ -4,9 +4,7 @@ from math import sqrt
 
 import numpy as np
 import torch
-from gym.wrappers import LazyFrames
-
-from common.utils import prep_observation_for_qnet
+from luxagent.Rainbow.common.utils import prep_observation_for_qnet
 
 
 class UniformReplayBuffer:
@@ -69,14 +67,12 @@ class PrioritizedReplayBuffer:
     removed alpha hyperparameter like google/dopamine
     """
 
-    def __init__(self, burnin: int, capacity: int, gamma: float, n_step: int, parallel_envs: int, use_amp):
+    def __init__(self, burnin: int, capacity: int, gamma: float, device):
         self.burnin = burnin
         self.capacity = capacity  # must be a power of two
         self.gamma = gamma
-        self.n_step = n_step
-        self.n_step_buffers = [collections.deque(maxlen=self.n_step + 1) for j in range(parallel_envs)]
+        self.device = device
 
-        self.use_amp = use_amp
 
         self.priority_sum = [0 for _ in range(2 * self.capacity)]
         self.priority_min = [float('inf') for _ in range(2 * self.capacity)]
@@ -87,38 +83,40 @@ class PrioritizedReplayBuffer:
         self.next_idx = 0  # next write location
         self.size = 0  # number of buffer elements
 
-    @staticmethod
-    def prepare_transition(state, next_state, action: int, reward: float, done: bool):
-        action = torch.LongTensor([action]).cuda()
-        reward = torch.FloatTensor([reward]).cuda()
-        done = torch.FloatTensor([done]).cuda()
+    def prepare_transition(self,state_planes, state_features, next_state_planes, next_state_features, action: int, reward: float, done: bool):
+        action = torch.LongTensor([action]).to(self.device)
+        reward = torch.FloatTensor([reward]).to(self.device)
+        done = torch.FloatTensor([done]).to(self.device)
 
-        return state, next_state, action, reward, done
+        return state_planes, state_features, next_state_planes, next_state_features, action, reward, done
 
-    def put(self, *transition, j):
-        self.n_step_buffers[j].append(transition)
-        if len(self.n_step_buffers[j]) == self.n_step + 1 and not self.n_step_buffers[j][0][3]:  # n-step transition can't start with terminal state
-            state = self.n_step_buffers[j][0][0]
-            action = self.n_step_buffers[j][0][1]
-            next_state = self.n_step_buffers[j][self.n_step][0]
-            done = self.n_step_buffers[j][self.n_step][3]
-            reward = self.n_step_buffers[j][0][2]
-            for k in range(1, self.n_step):
-                reward += self.n_step_buffers[j][k][2] * self.gamma ** k
-                if self.n_step_buffers[j][k][3]:
-                    done = True
-                    break
+    def put_whole_state(self, state:dict, action, reward, next_state:dict, done:bool):
+        for agent_id, player_state in state.items():
+            for unit_id, unit_state in player_state.items():
+                assert unit_id in reward[agent_id]
+                if unit_id in next_state[agent_id]:
+                    s = unit_state
+                    ns = next_state[agent_id][unit_id]
+                    r = reward[agent_id][unit_id]
+                    a = action[agent_id][unit_id]
+                    d = done
+                else:
+                    s = unit_state
+                    ns = unit_state
+                    r = reward[agent_id][unit_id]
+                    a = action[agent_id][unit_id]
+                    d = True
+                self.put(s["planes"],s["features"],ns["planes"],ns["features"],a,r,d)
 
-            assert isinstance(state, LazyFrames)
-            assert isinstance(next_state, LazyFrames)
 
-            idx = self.next_idx
-            self.data[idx] = self.prepare_transition(state, next_state, action, reward, done)
-            self.next_idx = (idx + 1) % self.capacity
-            self.size = min(self.capacity, self.size + 1)
+    def put(self, state_planes, state_features, next_state_planes, next_state_features, action, reward, done):
+        idx = self.next_idx
+        self.data[idx] = self.prepare_transition(state_planes, state_features, next_state_planes, next_state_features, action, reward, float(done))
+        self.next_idx = (idx + 1) % self.capacity
+        self.size = min(self.capacity, self.size + 1)
 
-            self._set_priority_min(idx, sqrt(self.max_priority))
-            self._set_priority_sum(idx, sqrt(self.max_priority))
+        self._set_priority_min(idx, sqrt(self.max_priority))
+        self._set_priority_sum(idx, sqrt(self.max_priority))
 
     def _set_priority_min(self, idx, priority_alpha):
         idx += self.capacity
@@ -177,13 +175,10 @@ class PrioritizedReplayBuffer:
         return indices, weights, self.prepare_samples(samples)
 
     def prepare_samples(self, batch):
-        state, next_state, action, reward, done = zip(*batch)
-        state = list(map(lambda x: torch.from_numpy(x.__array__()), state))
-        next_state = list(map(lambda x: torch.from_numpy(x.__array__()), next_state))
+        state_planes, state_features, next_state_planes, next_state_features, action, reward, done = zip(*batch)
 
-        state, next_state, action, reward, done = map(torch.stack, [state, next_state, action, reward, done])
-        return prep_observation_for_qnet(state, self.use_amp), prep_observation_for_qnet(next_state, self.use_amp), \
-               action.squeeze(), reward.squeeze(), done.squeeze()
+        state_planes, state_features, next_state_planes, next_state_features, action, reward, done = map(torch.stack, [state_planes, state_features, next_state_planes, next_state_features, action, reward, done])
+        return state_planes,state_features,next_state_planes,next_state_features,action.squeeze(), reward.squeeze(), done.squeeze()
 
     def update_priorities(self, indexes, priorities):
         for idx, priority in zip(indexes, priorities):

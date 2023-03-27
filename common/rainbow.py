@@ -1,6 +1,6 @@
 import random
+from collections import defaultdict
 from functools import partial
-from types import SimpleNamespace
 from typing import Tuple, Union
 
 import numpy as np
@@ -8,25 +8,24 @@ import torch
 import wandb
 from torch import nn as nn
 from rich import print
-from torch.cuda.amp import GradScaler, autocast
 
-from common import networks
-from common.replay_buffer import UniformReplayBuffer, PrioritizedReplayBuffer
-from common.utils import prep_observation_for_qnet
+from luxagent.Rainbow.common import networks
+from luxagent.Rainbow.common.replay_buffer import PrioritizedReplayBuffer
+
+from luxagent.config import Rainbow_config, Env_config
+from dataclasses import asdict
+from luxagent.models.robot_cnn import RainbowQ
 
 class Rainbow:
-    buffer: Union[UniformReplayBuffer, PrioritizedReplayBuffer]
+    buffer: PrioritizedReplayBuffer
 
-    def __init__(self, env, args: SimpleNamespace) -> None:
+    def __init__(self, env, rc:Rainbow_config, ec:Env_config, device) -> None:
+        self.device = device
         self.env = env
-        self.save_dir = args.save_dir
-        self.use_amp = args.use_amp
+        self.max_action = ec.action_size-1
 
-        net = networks.get_model(args.network_arch, args.spectral_norm)
-        linear_layer = partial(networks.FactorizedNoisyLinear, sigma_0=args.noisy_sigma0) if args.noisy_dqn else nn.Linear
-        depth = args.frame_stack*(1 if args.grayscale else 3)
-        self.q_policy = net(depth, env.action_space.n, linear_layer).cuda()
-        self.q_target = net(depth, env.action_space.n, linear_layer).cuda()
+        self.q_policy = RainbowQ(**asdict(rc.q_config)).to(device)
+        self.q_target = RainbowQ(**asdict(rc.q_config)).to(device)
         self.q_target.load_state_dict(self.q_policy.state_dict())
 
         #k = 0
@@ -34,24 +33,22 @@ class Rainbow:
         #    k += parameter.numel()
         #print(f'Q-Network has {k} parameters.')
 
-        self.double_dqn = args.double_dqn
+        self.double_dqn = rc.double_dqn
 
-        self.prioritized_er = args.prioritized_er
+        self.prioritized_er = rc.prioritized_er
         if self.prioritized_er:
-            self.buffer = PrioritizedReplayBuffer(args.burnin, args.buffer_size, args.gamma, args.n_step, args.parallel_envs, use_amp=self.use_amp)
+            self.buffer = PrioritizedReplayBuffer(rc.burnin, rc.buffer_size, rc.gamma,self.device)
         else:
-            self.buffer = UniformReplayBuffer(args.burnin, args.buffer_size, args.gamma, args.n_step, args.parallel_envs, use_amp=self.use_amp)
+            raise NotImplementedError()
+            # self.buffer = UniformReplayBuffer(rc.burnin, rc.buffer_size, rc.gamma, rc.n_step, rc.parallel_envs, use_amp=self.use_amp)
 
-        self.n_step_gamma = args.gamma ** args.n_step
+        self.n_step_gamma = rc.gamma ** rc.n_step
 
-        self.max_grad_norm = args.max_grad_norm
-        self.opt = torch.optim.Adam(self.q_policy.parameters(), lr=args.lr, eps=args.adam_eps)
-        self.scaler = GradScaler(enabled=self.use_amp)
+        self.max_grad_norm = rc.max_grad_norm
+        self.opt = torch.optim.Adam(self.q_policy.parameters(), lr=rc.lr)
+        # self.scaler = GradScaler(enabled=self.use_amp)
 
-        self.decay_lr = args.lr_decay_steps is not None
-        if self.decay_lr: self.scheduler = torch.optim.lr_scheduler.StepLR(self.opt, (args.lr_decay_steps*args.train_count)//args.parallel_envs, gamma=args.lr_decay_factor)
-
-        loss_fn_cls = nn.MSELoss if args.loss_fn == 'mse' else nn.SmoothL1Loss
+        loss_fn_cls = nn.MSELoss if rc.loss_fn == 'mse' else nn.SmoothL1Loss
         self.loss_fn = loss_fn_cls(reduction=('none' if self.prioritized_er else 'mean'))
 
     def sync_Q_target(self) -> None:
@@ -69,66 +66,80 @@ class Rainbow:
             if isinstance(m, networks.FactorizedNoisyLinear):
                 m.disable_noise()
 
-    def act(self, states, eps: float):
+    def act(self, states:dict, eps:float):
+        return self.act_multi_env([states],eps)[0]
+    
+    def act_multi_env(self, states:list, eps: float):
         """ computes an epsilon-greedy step with respect to the current policy self.q_policy """
-        with torch.no_grad():
-            with autocast(enabled=self.use_amp):
-                states = prep_observation_for_qnet(torch.from_numpy(np.stack(states)), self.use_amp)
-                action_values = self.q_policy(states, advantages_only=True)
-                actions = torch.argmax(action_values, dim=1)
-            if eps > 0:
-                for i in range(actions.shape[0]):
-                    if random.random() < eps:
-                        actions[i] = self.env.action_space.sample()
-            return actions.cpu()
+        feature_list = []
+        planes_list = []
+        unit_ids_list = []
+        agent_ids_list = []
+        state_number_list = []
+        for i,state in enumerate(states):
+            for agent_id, state_player in state.items():
+                for unit_id, robot_state in state_player.items():
+                    planes_list.append(robot_state["planes"])
+                    feature_list.append(robot_state["features"])
+                    unit_ids_list.append(unit_id)
+                    agent_ids_list.append(agent_id)
+                    state_number_list.append(i)
+        if len(feature_list) > 0: # Otherwise, no robots exist -> Do nothing
+            features = torch.stack(feature_list).to(self.device)
+            planes = torch.stack(planes_list).to(self.device)
+
+            q_vec = self.q_policy(planes,features)
+            best_actions = torch.argmax(q_vec,1).cpu()
+
+        action = [defaultdict(dict) for _ in states]
+        for i in range(len(agent_ids_list)):
+            if random.random() < eps:
+                action[state_number_list[i]][agent_ids_list[i]][unit_ids_list[i]] = random.randint(0,self.max_action)
+            else:
+                action[state_number_list[i]][agent_ids_list[i]][unit_ids_list[i]] = best_actions[i].item()
+        return action
 
     @torch.no_grad()
-    def td_target(self, reward: float, next_state, done: bool):
+    def td_target(self, reward: float, next_state_planes, next_state_features, done: bool):
         self.reset_noise(self.q_target)
         if self.double_dqn:
-            best_action = torch.argmax(self.q_policy(next_state, advantages_only=True), dim=1)
-            next_Q = torch.gather(self.q_target(next_state), dim=1, index=best_action.unsqueeze(1)).squeeze()
+            best_action = torch.argmax(self.q_policy(next_state_planes, next_state_features, advantages_only=True), dim=1)
+            next_Q = torch.gather(self.q_target(next_state_planes, next_state_features), dim=1, index=best_action.unsqueeze(1)).squeeze()
             return reward + self.n_step_gamma * next_Q * (1 - done)
         else:
-            max_q = torch.max(self.q_target(next_state), dim=1)[0]
+            max_q = torch.max(self.q_target(next_state_planes,next_state_features), dim=1)[0]
             return reward + self.n_step_gamma * max_q * (1 - done)
 
     def train(self, batch_size, beta=None) -> Tuple[float, float, float]:
         if self.prioritized_er:
-            indices, weights, (state, next_state, action, reward, done) = self.buffer.sample(batch_size, beta)
-            weights = torch.from_numpy(weights).cuda()
+            indices, weights, (state_planes, state_features, next_state_planes, next_state_features, action, reward, done) = self.buffer.sample(batch_size, beta)
+            weights = torch.from_numpy(weights).to(self.device)
         else:
-            state, next_state, action, reward, done = self.buffer.sample(batch_size)
+            raise NotImplementedError()
 
         self.opt.zero_grad()
-        with autocast(enabled=self.use_amp):
-            td_est = torch.gather(self.q_policy(state), dim=1, index=action.unsqueeze(1)).squeeze()
-            td_tgt = self.td_target(reward, next_state, done)
+        td_est = torch.gather(self.q_policy(state_planes,state_features), dim=1, index=action.unsqueeze(1)).squeeze()
+        td_tgt = self.td_target(reward, next_state_planes, next_state_features, done)
 
-            if self.prioritized_er:
-                td_errors = td_est-td_tgt
-                new_priorities = np.abs(td_errors.detach().cpu().numpy()) + 1e-6  # 1e-6 is the epsilon in PER
-                self.buffer.update_priorities(indices, new_priorities)
+        if self.prioritized_er:
+            td_errors = td_est-td_tgt
+            new_priorities = np.abs(td_errors.detach().cpu().numpy()) + 1e-6  # 1e-6 is the epsilon in PER
+            self.buffer.update_priorities(indices, new_priorities)
 
-                losses = self.loss_fn(td_tgt, td_est)
-                loss = torch.mean(weights * losses)
-            else:
-                loss = self.loss_fn(td_tgt, td_est)
+            losses = self.loss_fn(td_tgt, td_est)
+            loss = torch.mean(weights * losses)
+        else:
+            loss = self.loss_fn(td_tgt, td_est)
 
-        self.scaler.scale(loss).backward()
+        loss.backward()
 
-        self.scaler.unscale_(self.opt)
         grad_norm = nn.utils.clip_grad_norm_(list(self.q_policy.parameters()), self.max_grad_norm)
-        self.scaler.step(self.opt)
-        self.scaler.update()
-
-        if self.decay_lr:
-            self.scheduler.step()
+        self.opt.step()
 
         return td_est.mean().item(), loss.item(), grad_norm.item()
 
-    def save(self, game_frame, **kwargs):
-        save_path = (self.save_dir + f"/checkpoint_{game_frame}.pt")
+    def save(self, game_frame, save_dir, **kwargs):
+        save_path = (save_dir + f"/checkpoint_{game_frame}.pt")
         torch.save({**kwargs, 'state_dict': self.q_policy.state_dict(), 'game_frame': game_frame}, save_path)
 
         try:

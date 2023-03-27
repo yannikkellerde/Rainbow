@@ -3,23 +3,15 @@ Here all environment wrappers are defined and environments are created and confi
 Some of these wrappers are based on https://github.com/openai/baselines/blob/ea25b9e8b234e6ee1bca43083f8f3cf974143998/baselines/common/atari_wrappers.py
 """
 
+import gym
 import time
 from functools import partial
 
-import cv2, imageio
-import gym, retro
-from retro.examples.discretizer import Discretizer
 import numpy as np
+from luxagent.env.mining_training_env import MiningEnv
 
 import common.retro_utils as retro_utils
 from common.vec_envs import SubprocVecEnvNoFlatten, DummyVecEnvNoFlatten, LazyVecFrameStack
-
-cv2.ocl.setUseOpenCL(False)
-
-EMULATOR_REC_SCALE = 2
-PREPROC_REC_SCALE = 4
-BASE_FPS_ATARI = 100
-BASE_FPS_PROCGEN = 22
 
 class RecordEpisodeStatistics(gym.Wrapper):
     """
@@ -457,110 +449,17 @@ class DecorrEnvWrapper(gym.Wrapper):
             self.done = True
         return state
 
-
-def create_atari_env(config, instance_seed, instance, decorr_steps):
-    """ Creates a gym atari environment and wraps it for DeepMind-style Atari """
-
-    env = gym.make(config.env_name[4:] + 'NoFrameskip-v4')
-    env = TimeLimit(env, config.time_limit)
-
-    if instance == 0:
-        env = RecorderWrapper(env, fps=BASE_FPS_ATARI, save_dir=config.save_dir, label='emulator', record_every=config.record_every)
-
-    env = NoopResetEnv(env, instance_seed, noop_max=30)
-    env = MaxAndSkipEnv(env, skip=config.frame_skip)
-
-    env = RecordEpisodeStatistics(env, config.gamma)  # this has to be applied before the EpisodicLifeEnv wrapper!
-
-    # NOTE: it's unclear whether using the EpisodicLifeEnv and FireResetEnv wrappers yield any benefits
-    # see https://github.com/openai/baselines/issues/240#issuecomment-391165056
-    # and https://github.com/astooke/rlpyt/pull/158#issuecomment-632859702
-    env = EpisodicLifeEnv(env)
-    # if 'FIRE' in env.unwrapped.get_action_meanings():
-    #    env = FireResetEnv(env)
-
-    env = ClipRewardEnv(env)
-
-    env = WarpFrame(env, width=config.resolution[1], height=config.resolution[0], grayscale=config.grayscale)
-
-    if instance == 0:
-        env = RecorderWrapper(env, fps=BASE_FPS_ATARI // config.frame_skip, save_dir=config.save_dir, label='preproc', record_every=config.record_every)
-
+def create_mining_env(decorr_steps):
+    env = MiningEnv()
     if decorr_steps is not None:
         env = DecorrEnvWrapper(env, decorr_steps)
-
-    return env
-
-def create_retro_env(config, instance_seed, instance, decorr_steps):
-    """ Creates a retro environment and applies recommended wrappers. """
-    use_restricted_actions = retro.Actions.FILTERED
-    if config.retro_action_patch == 'discrete':
-        use_restricted_actions = retro.Actions.DISCRETE
-
-    randomize_state_on_reset = False
-    retro_state = retro.State.DEFAULT if (config.retro_state in ['default', 'randomized']) else config.retro_state
-    if config.retro_state == 'randomized': randomize_state_on_reset = True
-    env = retro.make(config.env_name[6:], state=retro_state, use_restricted_actions=use_restricted_actions)
-    if randomize_state_on_reset:  # note: this might mess with any EpisodicLifeEnv-like wrappers!
-        env = RandomizeStateOnReset(env, instance_seed)
-    if config.retro_action_patch == 'single_buttons':
-        env = Discretizer(env, [[x] for x in env.unwrapped.buttons if x not in ('SELECT', 'START')])
-
-    if instance == 0:
-        env = RecorderWrapper(env, fps=BASE_FPS_ATARI, save_dir=config.save_dir, label='emulator', record_every=config.record_every)
-
-    env = TimeLimit(env, max_episode_steps=config.time_limit)
-    if config.frame_skip > 1:
-        env = StochasticFrameSkip(env, seed=instance_seed, n=config.frame_skip, stickprob=config.retro_stickyprob)
-    env = RecordEpisodeStatistics(env, config.gamma)
-    env = RetroEpisodicLifeEnv(env)
-    env = ClipRewardEnv(env)
-    env = WarpFrame(env, width=config.resolution[1], height=config.resolution[0], grayscale=config.grayscale)
-
-    if instance == 0:
-        env = RecorderWrapper(env, fps=BASE_FPS_ATARI // config.frame_skip, save_dir=config.save_dir, label='preproc', record_every=config.record_every)
-
-    if decorr_steps is not None:
-        env = DecorrEnvWrapper(env, decorr_steps)
-    return env
-
-def create_procgen_env(config, instance_seed, instance):
-    """ Creates a procgen environment and applies recommended wrappers. """
-    procgen_args = {k[8:]: v for k, v in vars(config).items() if k.startswith('procgen_')}
-    procgen_args['start_level'] += 300_000*instance
-    env = gym.make(f'procgen:procgen-{config.env_name.lower()[8:]}-v0', **procgen_args)
-
-    if instance == 0:
-        env = RecorderWrapper(env, fps=BASE_FPS_PROCGEN, save_dir=config.save_dir, label='emulator', record_every=config.record_every)
-
-    if config.frame_skip > 1:
-        print('Frame skipping for procgen enabled!')
-        env = SkipFrameEnv(env, config.frame_skip)
-
-    env = RecordEpisodeStatistics(env, config.gamma)
-
-    # Note: openai doesn't use reward clipping for procgen with ppo & rainbow (https://arxiv.org/pdf/1912.01588.pdf)
-    # env = ClipRewardEnv(env)
-
-    env = WarpFrame(env, width=config.resolution[1], height=config.resolution[0], grayscale=config.grayscale)
-
-    if instance == 0:
-        env = RecorderWrapper(env, fps=BASE_FPS_PROCGEN // config.frame_skip, save_dir=config.save_dir, label='preproc', record_every=config.record_every)
     return env
 
 def create_env_instance(args, instance, decorr_steps):
     instance_seed = args.seed+instance
     decorr_steps = None if decorr_steps is None else decorr_steps*instance
 
-    if args.env_name.startswith('retro:'): env = create_retro_env(args, instance_seed, instance, decorr_steps)
-    elif args.env_name.startswith('gym:'): env = create_atari_env(args, instance_seed, instance, decorr_steps)
-    elif args.env_name.startswith('procgen:'): env = create_procgen_env(args, instance_seed, instance)
-    else: raise RuntimeError('Environment id needs to start with "gym:", "retro:" or "procgen:".')
-    if not args.env_name.startswith('procgen:'):
-        env.seed(instance_seed)
-        env.action_space.seed(instance_seed)
-        env.observation_space.seed(instance_seed)
-    return env
+    return create_mining_env(decorr_steps)
 
 def create_env(args, decorr_steps=None):
     env_fns = [partial(create_env_instance, args=args, instance=i, decorr_steps=decorr_steps) for i in range(args.parallel_envs)]
