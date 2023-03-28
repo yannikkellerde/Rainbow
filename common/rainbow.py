@@ -14,7 +14,7 @@ from luxagent.Rainbow.common.replay_buffer import PrioritizedReplayBuffer
 
 from luxagent.config import Rainbow_config, Env_config
 from dataclasses import asdict
-from luxagent.models.robot_cnn import RainbowQ, PoolFreeQ
+from luxagent.models.robot_cnn import TwoBlockQ
 
 class Rainbow:
     buffer: PrioritizedReplayBuffer
@@ -24,8 +24,8 @@ class Rainbow:
         self.env = env
         self.max_action = ec.action_size-1
 
-        self.q_policy = PoolFreeQ(**asdict(rc.q_config)).to(device)
-        self.q_target = PoolFreeQ(**asdict(rc.q_config)).to(device)
+        self.q_policy = TwoBlockQ(**asdict(rc.q_config)).to(device)
+        self.q_target = TwoBlockQ(**asdict(rc.q_config)).to(device)
         self.q_target.load_state_dict(self.q_policy.state_dict())
 
         #k = 0
