@@ -14,7 +14,7 @@ from luxagent.Rainbow.common.replay_buffer import PrioritizedReplayBuffer
 
 from luxagent.config import Rainbow_config, Env_config
 from dataclasses import asdict
-from luxagent.models.robot_cnn import TwoBlockQ
+from luxagent.models.robot_Q import TwoBlockQ
 
 class Rainbow:
     buffer: PrioritizedReplayBuffer
