@@ -1,6 +1,32 @@
 import zlib
 import torch
 
+class StatisticsAccumlator():
+    def __init__(self):
+        self.statistics = {}
+        self.statistic_number = {}
+
+    def update(self,stats):
+        for key in stats:
+            if key in self.statistics:
+                self.statistics[key]+=stats[key]
+                self.statistic_number[key]+=1
+            else:
+                self.statistics[key] = stats[key]
+                self.statistic_number[key] = 1
+
+    def get(self,keep=False):
+        out_stats = {}
+        for key in self.statistics:
+            out_stats[key] = self.statistics[key]/self.statistic_number[key]
+        if not keep:
+            self.statistics = {}
+            self.statistic_number = {}
+        return out_stats
+
+def count_parameters(model):
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
 def prep_observation_for_qnet(tensor, use_amp):
     """ Tranfer the tensor the gpu and reshape it into (batch, frame_stack*channels, y, x) """
     assert len(tensor.shape) == 5, tensor.shape # (batch, frame_stack, y, x, channels)

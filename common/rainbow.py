@@ -14,7 +14,7 @@ from luxagent.Rainbow.common.replay_buffer import PrioritizedReplayBuffer
 
 from luxagent.config import Rainbow_config, Env_config
 from dataclasses import asdict
-from luxagent.models.robot_cnn import RainbowQ
+from luxagent.models.robot_cnn import RainbowQ, PoolFreeQ
 
 class Rainbow:
     buffer: PrioritizedReplayBuffer
@@ -24,8 +24,8 @@ class Rainbow:
         self.env = env
         self.max_action = ec.action_size-1
 
-        self.q_policy = RainbowQ(**asdict(rc.q_config)).to(device)
-        self.q_target = RainbowQ(**asdict(rc.q_config)).to(device)
+        self.q_policy = PoolFreeQ(**asdict(rc.q_config)).to(device)
+        self.q_target = PoolFreeQ(**asdict(rc.q_config)).to(device)
         self.q_target.load_state_dict(self.q_policy.state_dict())
 
         #k = 0
@@ -88,7 +88,7 @@ class Rainbow:
             features = torch.stack(feature_list).to(self.device)
             planes = torch.stack(planes_list).to(self.device)
 
-            q_vec = self.q_policy(planes,features)
+            q_vec = self.q_policy(planes,features,advantages_only=True)
             best_actions = torch.argmax(q_vec,1).cpu()
 
         action = [defaultdict(dict) for _ in states]
