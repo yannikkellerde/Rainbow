@@ -7,61 +7,6 @@ import torch
 from luxagent.Rainbow.common.utils import prep_observation_for_qnet
 
 
-class UniformReplayBuffer:
-    def __init__(self, burnin, capacity, gamma, n_step, parallel_envs, use_amp):
-        self.capacity = capacity
-        self.burnin = burnin
-        self.buffer = []
-        self.nextwrite = 0
-        self.use_amp = use_amp
-
-        self.gamma = gamma
-        self.n_step = n_step
-        self.n_step_buffers = [collections.deque(maxlen=self.n_step + 1) for j in range(parallel_envs)]
-
-    def put(self, *transition, j):
-        self.n_step_buffers[j].append(transition)
-        if len(self.n_step_buffers[j]) == self.n_step + 1 and not self.n_step_buffers[j][0][3]:  # n-step transition can't start with terminal state
-            state = self.n_step_buffers[j][0][0]
-            action = self.n_step_buffers[j][0][1]
-            next_state = self.n_step_buffers[j][self.n_step][0]
-            done = self.n_step_buffers[j][self.n_step][3]
-            reward = self.n_step_buffers[j][0][2]
-            for k in range(1, self.n_step):
-                reward += self.n_step_buffers[j][k][2] * self.gamma ** k
-                if self.n_step_buffers[j][k][3]:
-                    done = True
-                    break
-
-            action = torch.LongTensor([action]).cuda()
-            reward = torch.FloatTensor([reward]).cuda()
-            done = torch.FloatTensor([done]).cuda()
-
-            if len(self.buffer) < self.capacity:
-                self.buffer.append((state, next_state, action, reward, done))
-            else:
-                self.buffer[self.nextwrite % self.capacity] = (state, next_state, action, reward, done)
-                self.nextwrite += 1
-
-    def sample(self, batch_size, beta=None):
-        """ Sample a minibatch from the ER buffer (also converts the FrameStacked LazyFrames to contiguous tensors) """
-        batch = random.sample(self.buffer, batch_size)
-        state, next_state, action, reward, done = zip(*batch)
-        state = list(map(lambda x: torch.from_numpy(x.__array__()), state))
-        next_state = list(map(lambda x: torch.from_numpy(x.__array__()), next_state))
-
-        state, next_state, action, reward, done = map(torch.stack, [state, next_state, action, reward, done])
-        return prep_observation_for_qnet(state, self.use_amp), prep_observation_for_qnet(next_state, self.use_amp), \
-               action.squeeze(), reward.squeeze(), done.squeeze()
-
-    @property
-    def burnedin(self):
-        return len(self) >= self.burnin
-
-    def __len__(self):
-        return len(self.buffer)
-
-
 class PrioritizedReplayBuffer:
     """ based on https://nn.labml.ai/rl/dqn, supports n-step bootstrapping and parallel environments,
     removed alpha hyperparameter like google/dopamine
@@ -90,16 +35,16 @@ class PrioritizedReplayBuffer:
 
         return state_planes, state_features, next_state_planes, next_state_features, action, reward, done
 
-    def put_whole_state(self, state:dict, action, reward, next_state:dict, done:bool):
+    def put_whole_state(self, state:dict, action, reward, next_state:dict, done:bool, unit_dones:dict):
         for agent_id, player_state in state.items():
             for unit_id, unit_state in player_state.items():
                 assert unit_id in reward[agent_id]
-                if unit_id in next_state[agent_id]:
+                if agent_id in next_state and unit_id in next_state[agent_id]:
                     s = unit_state
                     ns = next_state[agent_id][unit_id]
                     r = reward[agent_id][unit_id]
                     a = action[agent_id][unit_id]
-                    d = done
+                    d = done or (unit_id in unit_dones and unit_dones[unit_id])
                 else:
                     s = unit_state
                     ns = unit_state

@@ -140,7 +140,7 @@ class Rainbow:
 
     def save(self, game_frame, save_dir, **kwargs):
         save_path = (save_dir + f"/checkpoint_{game_frame}.pt")
-        torch.save({**kwargs, 'state_dict': self.q_policy.state_dict(), 'game_frame': game_frame}, save_path)
+        torch.save({**kwargs, 'state_dict': self.q_policy.state_dict(), 'game_frame': game_frame, 'optimizer_state_dict': self.opt.state_dict()}, save_path)
 
         try:
             artifact = wandb.Artifact('saved_model', type='model')
