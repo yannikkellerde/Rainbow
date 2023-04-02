@@ -9,8 +9,8 @@ import wandb
 from torch import nn as nn
 from rich import print
 
-from luxagent.Rainbow.common import networks
-from luxagent.Rainbow.common.replay_buffer import PrioritizedReplayBuffer
+from luxagent.algorithm.Rainbow.common import networks
+from luxagent.algorithm.replay.TD_replay_buffer import PrioritizedReplayBuffer
 
 from luxagent.config import Rainbow_config, Env_config
 from dataclasses import asdict
