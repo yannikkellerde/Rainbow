@@ -1,7 +1,9 @@
 **/__pycache__/**
-/checkpoints/**/
-!/checkpoints/breezy-morning-37/checkpoint_breaker_32800000.pt
-!/checkpoints/breezy-morning-37/checkpoint_maker_32800000.pt
+/checkpoints/*/*/*
+!/checkpoints/gnn_7x7/7/checkpoint_14395392.pt
+!/checkpoints/rainbow_gnn_11x11/11/checkpoint_44085888.pt
+!/checkpoints/rainbow_cnn_11x11/11/checkpoint_65978880.pt
+!/checkpoints/cnn_7x7_fully_conv/7/checkpoint_37488000.pt
 wandb/
 *.pdf
 *.sgf
