@@ -20,6 +20,7 @@ def read_args():
     parser.add_argument("--cnn_hex_size",type=int,default=5)
     parser.add_argument("--cnn_zero_fill",type=parse_bool,default=False)
     parser.add_argument("--cnn_mode",type=parse_bool,default=False)
+    parser.add_argument("--gao_mode",type=parse_bool,default=False)
     parser.add_argument('--roundrobin_players', type=int, default=10, help='How many player will play in each roundrobin elo tournament')
     parser.add_argument('--roundrobin_games', type=int, default=12, help='How many games will be played in each matchup of the roundrobin tournament')
 

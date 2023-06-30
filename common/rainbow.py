@@ -23,7 +23,7 @@ from torch_scatter import scatter, scatter_mean, scatter_max
 from GN0.RainbowDQN.evaluate_elo import Elo_handler, random_player
 from graph_game.graph_tools_games import Hex_game
 from GN0.util.convert_graph import convert_node_switching_game
-from GN0.util.util import downsample_cnn_outputs
+from GN0.util.util import downsample_cnn_outputs, downsample_gao_outputs
  
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 if not torch.cuda.is_available():
@@ -37,7 +37,8 @@ class Rainbow:
         self.env:Env_manager = env
         self.cnn_mode = args.cnn_mode
         self.cnn_hex_size = args.cnn_hex_size
-        self.cnn_zero_fill = args.cnn_zero_fill
+        self.gao_mode = args.gao_mode
+        self.net_transform = downsample_gao_outputs if self.gao_mode else downsample_cnn_outputs
         if self.cnn_mode:
             self.starting_red_blue_sum = torch.sum(env.starting_obs[:2,:])
         self.save_dir = args.save_dir
@@ -51,9 +52,9 @@ class Rainbow:
         self.q_target.load_state_dict(self.q_policy.state_dict())
 
         self.elo_handler = Elo_handler(args.hex_size,empty_model_func=lambda :model_creation_func().to(device),device=device)
-        self.elo_handler.add_player("maker",self.q_policy,set_rating=None,rating_fixed=True,can_join_roundrobin=False,uses_empty_model=True, cnn=self.cnn_mode, cnn_hex_size=self.cnn_hex_size if self.cnn_mode else None, cnn_zero_fill=self.cnn_zero_fill)
-        self.elo_handler.add_player("breaker",self.q_policy,set_rating=None,rating_fixed=True,can_join_roundrobin=False,uses_empty_model=True, cnn=self.cnn_mode, cnn_hex_size=self.cnn_hex_size if self.cnn_mode else None, cnn_zero_fill=self.cnn_zero_fill)
-        self.elo_handler.add_player("random",random_player,set_rating=0,simple=True,rating_fixed=True,can_join_roundrobin=True,uses_empty_model=False, cnn=self.cnn_mode, cnn_hex_size=self.cnn_hex_size if self.cnn_mode else None, cnn_zero_fill=self.cnn_zero_fill)
+        self.elo_handler.add_player("maker",self.q_policy,set_rating=None,rating_fixed=True,can_join_roundrobin=False,uses_empty_model=True, cnn=self.cnn_mode, cnn_hex_size=self.cnn_hex_size if self.cnn_mode else None, gao_style=self.gao_mode)
+        self.elo_handler.add_player("breaker",self.q_policy,set_rating=None,rating_fixed=True,can_join_roundrobin=False,uses_empty_model=True, cnn=self.cnn_mode, cnn_hex_size=self.cnn_hex_size if self.cnn_mode else None, gao_style=self.gao_mode)
+        self.elo_handler.add_player("random",random_player,set_rating=0,simple=True,rating_fixed=True,can_join_roundrobin=True,uses_empty_model=False, cnn=self.cnn_mode, cnn_hex_size=self.cnn_hex_size if self.cnn_mode else None, gao_style=self.gao_mode)
 
         self.roundrobin_players = args.roundrobin_players
         self.roundrobin_games = args.roundrobin_games
@@ -88,11 +89,12 @@ class Rainbow:
         self.q_policy.eval()
         new_game = Hex_game(int(math.sqrt(self.maximum_nodes)))
         if self.cnn_mode:
-            to_pred_maker = new_game.board.to_input_planes(self.cnn_hex_size,zero_fill=self.cnn_zero_fill).unsqueeze(0).to(device)
+            f = new_game.board.to_gao_input_planes if self.gao_mode else new_game.board.to_input_planes
+            to_pred_maker = f(self.cnn_hex_size).unsqueeze(0).to(device)
             new_game.view.gp["m"] = not new_game.view.gp["m"]
-            to_pred_breaker = new_game.board.to_input_planes(self.cnn_hex_size,zero_fill=self.cnn_zero_fill).unsqueeze(0).to(device)
-            pred_maker = downsample_cnn_outputs(self.q_policy(to_pred_maker),self.hex_size).squeeze()
-            pred_breaker = downsample_cnn_outputs(self.q_policy(to_pred_breaker),self.hex_size).squeeze()
+            to_pred_breaker = f(self.cnn_hex_size).unsqueeze(0).to(device)
+            pred_maker = self.net_transform(self.q_policy(to_pred_maker),self.hex_size).squeeze()
+            pred_breaker = self.net_transform(self.q_policy(to_pred_breaker),self.hex_size).squeeze()
             maker_vinds = {new_game.board.board_index_to_vertex_index[int(i)]:value for i,value in enumerate(pred_maker)}
             breaker_vinds = {new_game.board.board_index_to_vertex_index[int(i)]:value for i,value in enumerate(pred_breaker)}
         else:
@@ -119,7 +121,7 @@ class Rainbow:
 
     def run_roundrobin_with_new_agent(self,game_frame,checkpoint,model=None):
         name = str(game_frame)+"_"+str(math.sqrt(self.maximum_nodes))
-        self.elo_handler.add_player(name=name,checkpoint=checkpoint,model=model,episode_number=game_frame,uses_empty_model=True,cnn=self.cnn_mode, cnn_hex_size=self.cnn_hex_size if self.cnn_mode else None, cnn_zero_fill=self.cnn_zero_fill)
+        self.elo_handler.add_player(name=name,checkpoint=checkpoint,model=model,episode_number=game_frame,uses_empty_model=True,cnn=self.cnn_mode, cnn_hex_size=self.cnn_hex_size if self.cnn_mode else None, gao_style=self.gao_mode)
         return self.elo_handler.roundrobin(self.roundrobin_players,self.roundrobin_games,[name,"random"])
  
 
@@ -143,11 +145,11 @@ class Rainbow:
             else:
                 print("Warning, no cache")
             nn.eval()
-            self.elo_handler.add_player("last_breaker",nn,set_rating=None,rating_fixed=True,can_join_roundrobin=False,uses_empty_model=True,cnn=self.cnn_mode,cnn_hex_size=self.cnn_hex_size if self.cnn_mode else None, cnn_zero_fill=self.cnn_zero_fill)
+            self.elo_handler.add_player("last_breaker",nn,set_rating=None,rating_fixed=True,can_join_roundrobin=False,uses_empty_model=True,cnn=self.cnn_mode,cnn_hex_size=self.cnn_hex_size if self.cnn_mode else None, gao_style=self.gao_mode)
             maker_last_breaker = self.elo_handler.play_some_games("maker","last_breaker",num_games=128,temperature=0,random_first_move=True)
             additional_logs["maker_last_breaker_winrate"] = maker_last_breaker["maker"]/(maker_last_breaker["maker"]+maker_last_breaker["last_breaker"])
 
-            self.elo_handler.add_player("last_maker",nn,set_rating=None,rating_fixed=True,can_join_roundrobin=False,uses_empty_model=True,cnn=self.cnn_mode,cnn_hex_size=self.cnn_hex_size if self.cnn_mode else None, cnn_zero_fill=self.cnn_zero_fill)
+            self.elo_handler.add_player("last_maker",nn,set_rating=None,rating_fixed=True,can_join_roundrobin=False,uses_empty_model=True,cnn=self.cnn_mode,cnn_hex_size=self.cnn_hex_size if self.cnn_mode else None, gao_style=self.gao_mode)
             breaker_last_maker = self.elo_handler.play_some_games("last_maker","breaker",num_games=128,temperature=0,random_first_move=True)
             additional_logs["breaker_last_maker_winrate"] = breaker_last_maker["breaker"]/(breaker_last_maker["breaker"]+breaker_last_maker["last_maker"])
             all_stats.extend([maker_last_breaker,breaker_last_maker])
@@ -160,7 +162,7 @@ class Rainbow:
     def sync_Q_target(self) -> None:
         self.q_target.load_state_dict(self.q_policy.state_dict())
 
-    @torch.no_grad()
+    torch.no_grad()
     def reset_noise(self, net) -> None:
         for m in net.modules():
             if isinstance(m, FactorizedNoisyLinear):
@@ -193,15 +195,15 @@ class Rainbow:
         batch = torch.stack(states).to(device)
         exploratories = np.zeros(len(states)).astype(bool)
         with torch.no_grad():
-            action_values = downsample_cnn_outputs(self.q_policy(batch,advantages_only=True),self.hex_size)
-            mask = downsample_cnn_outputs(torch.logical_or(batch[:,0].reshape(batch.shape[0],-1).bool(),batch[:,1].reshape(batch.shape[0],-1).bool()),self.hex_size)
+            action_values = self.net_transform(self.q_policy(batch,advantages_only=True),self.hex_size)
+            mask = self.net_transform(torch.logical_or(batch[:,0].reshape(batch.shape[0],-1).bool(),batch[:,1].reshape(batch.shape[0],-1).bool()),self.hex_size)
             action_values[mask] = -5 # Exclude occupied squares
 
             actions = torch.argmax(action_values,dim=1)
             if eps > 0:
                 for i in range(actions.shape[0]):
                     if torch.sum(states[i][:2,:])==self.starting_red_blue_sum or random.random() < eps: # First move: Random!
-                        mask = downsample_cnn_outputs(torch.logical_not(torch.logical_or(states[i][0].flatten(),states[i][1].flatten())).to("cpu"),self.hex_size)
+                        mask = self.net_transform(torch.logical_not(torch.logical_or(states[i][0].flatten(),states[i][1].flatten())).to("cpu"),self.hex_size)
                         legal_actions = torch.arange(0,len(mask))[mask]
                         actions[i] = legal_actions[random.randint(0,len(legal_actions)-1)]
                         exploratories[i] = True
@@ -239,16 +241,16 @@ class Rainbow:
     def cnn_td_target(self, reward: Tensor, next_state:Tensor, done: Tensor):
         self.reset_noise(self.q_target)
         if self.double_dqn:
-            advantages = downsample_cnn_outputs(self.q_policy(next_state,advantages_only=True),self.hex_size)
-            mask = downsample_cnn_outputs(torch.logical_or(next_state[:,0].reshape(next_state.shape[0],-1).bool(),next_state[:,1].reshape(next_state.shape[0],-1).bool()),self.hex_size)
+            advantages = self.net_transform(self.q_policy(next_state,advantages_only=True),self.hex_size)
+            mask = self.net_transform(torch.logical_or(next_state[:,0].reshape(next_state.shape[0],-1).bool(),next_state[:,1].reshape(next_state.shape[0],-1).bool()),self.hex_size)
             advantages[mask] = -5 # Exclude occupied squares
             best_action = torch.argmax(advantages,dim=1)
             best_action = best_action.squeeze()
-            next_Q = torch.gather(downsample_cnn_outputs(self.q_target(next_state),self.hex_size),1,best_action.unsqueeze(1)).squeeze()
+            next_Q = torch.gather(self.net_transform(self.q_target(next_state),self.hex_size),1,best_action.unsqueeze(1)).squeeze()
             return reward + self.n_step_gamma * next_Q * (1 - done)
         else:
-            advantages = downsample_cnn_outputs(self.q_target(next_state),self.hex_size)
-            mask = downsample_cnn_outputs(torch.logical_or(next_state[:,0].reshape(next_state.shape[0],-1).bool(),next_state[:,1].reshape(next_state.shape[0],-1).bool()),self.hex_size)
+            advantages = self.net_transform(self.q_target(next_state),self.hex_size)
+            mask = self.net_transform(torch.logical_or(next_state[:,0].reshape(next_state.shape[0],-1).bool(),next_state[:,1].reshape(next_state.shape[0],-1).bool()),self.hex_size)
             advantages[mask] = -5 # Exclude occupied squares
             max_q = torch.max(advantages,dim=1)
             return reward + self.n_step_gamma * max_q * (1 - done)
@@ -290,7 +292,7 @@ class Rainbow:
         self.opt.zero_grad()
         with autocast(enabled=self.use_amp):
             if self.cnn_mode:
-                p_res = downsample_cnn_outputs(self.q_policy(state),self.hex_size)
+                p_res = self.net_transform(self.q_policy(state),self.hex_size)
                 td_est = torch.gather(p_res,1,action.unsqueeze(1)).squeeze()
                 td_tgt = self.cnn_td_target(reward, next_state, done)
 
