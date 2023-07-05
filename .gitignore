@@ -1,5 +1,6 @@
 **/__pycache__/**
 /checkpoints/*/*/*
+**/checkpoints/**
 !/checkpoints/gnn_7x7/7/checkpoint_14395392.pt
 !/checkpoints/rainbow_gnn_11x11/11/checkpoint_44085888.pt
 !/checkpoints/rainbow_cnn_11x11/11/checkpoint_65978880.pt

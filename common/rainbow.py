@@ -35,6 +35,7 @@ class Rainbow:
 
     def __init__(self, env:Env_manager, model_creation_func, args: SimpleNamespace) -> None:
         self.env:Env_manager = env
+        self.border_fill = args.border_fill
         self.cnn_mode = args.cnn_mode
         self.cnn_hex_size = args.cnn_hex_size
         self.gao_mode = args.gao_mode
@@ -52,9 +53,9 @@ class Rainbow:
         self.q_target.load_state_dict(self.q_policy.state_dict())
 
         self.elo_handler = Elo_handler(args.hex_size,empty_model_func=lambda :model_creation_func().to(device),device=device)
-        self.elo_handler.add_player("maker",self.q_policy,set_rating=None,rating_fixed=True,can_join_roundrobin=False,uses_empty_model=True, cnn=self.cnn_mode, cnn_hex_size=self.cnn_hex_size if self.cnn_mode else None, gao_style=self.gao_mode)
-        self.elo_handler.add_player("breaker",self.q_policy,set_rating=None,rating_fixed=True,can_join_roundrobin=False,uses_empty_model=True, cnn=self.cnn_mode, cnn_hex_size=self.cnn_hex_size if self.cnn_mode else None, gao_style=self.gao_mode)
-        self.elo_handler.add_player("random",random_player,set_rating=0,simple=True,rating_fixed=True,can_join_roundrobin=True,uses_empty_model=False, cnn=self.cnn_mode, cnn_hex_size=self.cnn_hex_size if self.cnn_mode else None, gao_style=self.gao_mode)
+        self.elo_handler.add_player("maker",self.q_policy,set_rating=None,rating_fixed=True,can_join_roundrobin=False,uses_empty_model=True, cnn=self.cnn_mode, cnn_hex_size=self.cnn_hex_size if self.cnn_mode else None, gao_style=self.gao_mode,border_fill=self.border_fill)
+        self.elo_handler.add_player("breaker",self.q_policy,set_rating=None,rating_fixed=True,can_join_roundrobin=False,uses_empty_model=True, cnn=self.cnn_mode, cnn_hex_size=self.cnn_hex_size if self.cnn_mode else None, gao_style=self.gao_mode,border_fill=self.border_fill)
+        self.elo_handler.add_player("random",random_player,set_rating=0,simple=True,rating_fixed=True,can_join_roundrobin=True,uses_empty_model=False, cnn=self.cnn_mode, cnn_hex_size=self.cnn_hex_size if self.cnn_mode else None, gao_style=self.gao_mode,border_fill=self.border_fill)
 
         self.roundrobin_players = args.roundrobin_players
         self.roundrobin_games = args.roundrobin_games
@@ -90,9 +91,9 @@ class Rainbow:
         new_game = Hex_game(int(math.sqrt(self.maximum_nodes)))
         if self.cnn_mode:
             f = new_game.board.to_gao_input_planes if self.gao_mode else new_game.board.to_input_planes
-            to_pred_maker = f(self.cnn_hex_size).unsqueeze(0).to(device)
+            to_pred_maker = f(do_border_fill=self.border_fill).unsqueeze(0).to(device)
             new_game.view.gp["m"] = not new_game.view.gp["m"]
-            to_pred_breaker = f(self.cnn_hex_size).unsqueeze(0).to(device)
+            to_pred_breaker = f(border_fill=self.border_fill).unsqueeze(0).to(device)
             pred_maker = self.net_transform(self.q_policy(to_pred_maker),self.hex_size).squeeze()
             pred_breaker = self.net_transform(self.q_policy(to_pred_breaker),self.hex_size).squeeze()
             maker_vinds = {new_game.board.board_index_to_vertex_index[int(i)]:value for i,value in enumerate(pred_maker)}
@@ -121,7 +122,7 @@ class Rainbow:
 
     def run_roundrobin_with_new_agent(self,game_frame,checkpoint,model=None):
         name = str(game_frame)+"_"+str(math.sqrt(self.maximum_nodes))
-        self.elo_handler.add_player(name=name,checkpoint=checkpoint,model=model,episode_number=game_frame,uses_empty_model=True,cnn=self.cnn_mode, cnn_hex_size=self.cnn_hex_size if self.cnn_mode else None, gao_style=self.gao_mode)
+        self.elo_handler.add_player(name=name,checkpoint=checkpoint,model=model,episode_number=game_frame,uses_empty_model=True,cnn=self.cnn_mode, cnn_hex_size=self.cnn_hex_size if self.cnn_mode else None, gao_style=self.gao_mode,border_fill=self.border_fill)
         return self.elo_handler.roundrobin(self.roundrobin_players,self.roundrobin_games,[name,"random"])
  
 
@@ -145,11 +146,11 @@ class Rainbow:
             else:
                 print("Warning, no cache")
             nn.eval()
-            self.elo_handler.add_player("last_breaker",nn,set_rating=None,rating_fixed=True,can_join_roundrobin=False,uses_empty_model=True,cnn=self.cnn_mode,cnn_hex_size=self.cnn_hex_size if self.cnn_mode else None, gao_style=self.gao_mode)
+            self.elo_handler.add_player("last_breaker",nn,set_rating=None,rating_fixed=True,can_join_roundrobin=False,uses_empty_model=True,cnn=self.cnn_mode,cnn_hex_size=self.cnn_hex_size if self.cnn_mode else None, gao_style=self.gao_mode,border_fill=self.border_fill)
             maker_last_breaker = self.elo_handler.play_some_games("maker","last_breaker",num_games=128,temperature=0,random_first_move=True)
             additional_logs["maker_last_breaker_winrate"] = maker_last_breaker["maker"]/(maker_last_breaker["maker"]+maker_last_breaker["last_breaker"])
 
-            self.elo_handler.add_player("last_maker",nn,set_rating=None,rating_fixed=True,can_join_roundrobin=False,uses_empty_model=True,cnn=self.cnn_mode,cnn_hex_size=self.cnn_hex_size if self.cnn_mode else None, gao_style=self.gao_mode)
+            self.elo_handler.add_player("last_maker",nn,set_rating=None,rating_fixed=True,can_join_roundrobin=False,uses_empty_model=True,cnn=self.cnn_mode,cnn_hex_size=self.cnn_hex_size if self.cnn_mode else None, gao_style=self.gao_mode,border_fill=self.border_fill)
             breaker_last_maker = self.elo_handler.play_some_games("last_maker","breaker",num_games=128,temperature=0,random_first_move=True)
             additional_logs["breaker_last_maker_winrate"] = breaker_last_maker["breaker"]/(breaker_last_maker["breaker"]+breaker_last_maker["last_maker"])
             all_stats.extend([maker_last_breaker,breaker_last_maker])
