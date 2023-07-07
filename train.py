@@ -128,10 +128,13 @@ if __name__ == '__main__':
     state_history,reward_history,done_history,action_history,exploratories_history = [],[],[],[],[]
     last_checkpoint = None
     hex_size = args.hex_size
-    batch_size = args.batch_size + 64*(11-hex_size)
+    if args.grow:
+        batch_size = args.batch_size + 64*(11-hex_size)
+    else:
+        batch_size = args.batch_size
 
     checkpoint_frames = 300_000
-    eval_frames = 80_000
+    eval_frames = 800_000
     log_frames = 2_000
     jumping_extra = int(3600*4)
 
@@ -288,7 +291,8 @@ if __name__ == '__main__':
                 if hex_size<11:
                     hex_size+=1
                     next_jump = time.perf_counter()+growth_schedule[hex_size][2]
-                    batch_size = args.batch_size + 64*(11-hex_size)
+                    if args.grow:
+                        batch_size = args.batch_size + 64*(11-hex_size)
                     print(f"Increasing hex size to {hex_size}")
                     rainbow.maximum_nodes = hex_size**2
                     rainbow.elo_handler.reset(new_hex_size=hex_size,keep_players=["random","maker","breaker"])
